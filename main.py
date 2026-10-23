@@ -19,12 +19,19 @@ def main() -> None:
     parser.add_argument("--observation", help="Required for --environment manual")
     parser.add_argument("--max-steps", type=int, default=10)
     args = parser.parse_args()
+    if not args.session_id.strip():
+        parser.error("--session-id must be non-empty")
+    if not args.task.strip():
+        parser.error("--task must be non-empty")
     if args.max_steps < 1:
         parser.error("--max-steps must be positive")
-    if args.environment == "manual" and not args.observation:
+    if args.environment == "manual" and not (args.observation and args.observation.strip()):
         parser.error("--observation is required for --environment manual")
 
-    settings = Settings.from_env()
+    try:
+        settings = Settings.from_env()
+    except ValueError as exc:
+        parser.error(str(exc))
     graph = Neo4jKnowledgeGraph(
         settings.neo4j_uri,
         settings.neo4j_username,
