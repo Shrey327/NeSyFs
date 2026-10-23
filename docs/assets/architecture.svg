@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="650" viewBox="0 0 1180 650" role="img" aria-labelledby="title description">
+  <title id="title">NeSyFS implementation architecture</title>
+  <desc id="description">The current observation updates session-scoped Neo4j facts. Retrieved facts support action proposals and reflection. Approved actions execute directly. After three rejected proposals, an in-memory particle planner chooses an action. Only the real environment outcome updates persistent memory. Numbers show implementation defaults.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L6,3 L0,6" fill="none" stroke="#57697e" stroke-width="1.4"/></marker>
+    <marker id="green-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L6,3 L0,6" fill="none" stroke="#087c69" stroke-width="1.4"/></marker>
+  </defs>
+  <rect width="1180" height="650" rx="20" fill="#f5f7fb"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="44" y="54" font-size="16" font-weight="700" fill="#2761a7" letter-spacing="2">NEURO-SYMBOLIC FAST-SLOW THINKING</text>
+    <text x="44" y="96" font-size="31" font-weight="700" fill="#172b46">From partial observation to one action</text>
+    <text x="44" y="126" font-size="18" fill="#526178">Implementation flow · Default settings · Inspired by NeSyFS v2</text>
+
+    <rect x="44" y="174" width="300" height="288" rx="14" fill="#ffffff" stroke="#cdd8e7"/>
+    <rect x="44" y="174" width="300" height="7" rx="3" fill="#326eb6"/>
+    <text x="66" y="214" font-size="16" font-weight="700" fill="#326eb6">01 / STRUCTURED MEMORY</text>
+    <text x="66" y="253" font-size="25" font-weight="700" fill="#172b46">Belief graph</text>
+    <text x="66" y="291" font-size="19" fill="#354961">Task + current observation</text>
+    <text x="66" y="323" font-size="19" fill="#354961">Extract and update facts</text>
+    <text x="66" y="355" font-size="19" fill="#354961">Retrieve relevant context</text>
+    <rect x="66" y="388" width="256" height="48" rx="8" fill="#edf3fb"/>
+    <text x="194" y="418" font-size="18" text-anchor="middle" fill="#244f83">Neo4j · scoped by session</text>
+
+    <rect x="398" y="174" width="320" height="288" rx="14" fill="#ffffff" stroke="#cdd8e7"/>
+    <rect x="398" y="174" width="320" height="7" rx="3" fill="#087c69"/>
+    <text x="420" y="214" font-size="16" font-weight="700" fill="#087c69">02 / REACT + REFLECT</text>
+    <text x="420" y="253" font-size="25" font-weight="700" fill="#172b46">Fast thinking</text>
+    <rect x="420" y="275" width="251" height="50" rx="8" fill="#eef8f5"/>
+    <text x="545" y="306" font-size="19" text-anchor="middle" fill="#155e51">Propose one action</text>
+    <path d="M545,325 V346" fill="none" stroke="#57697e" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="420" y="353" width="251" height="50" rx="8" fill="#eef8f5"/>
+    <text x="545" y="384" font-size="19" text-anchor="middle" fill="#155e51">Reflect: 4 of 5 approve</text>
+    <path d="M671,378 H696 V300 H674" fill="none" stroke="#57697e" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="420" y="436" font-size="17" fill="#526178">Rejected? Retry with feedback.</text>
+
+    <rect x="772" y="174" width="364" height="288" rx="14" fill="#ffffff" stroke="#cdd8e7"/>
+    <rect x="772" y="174" width="364" height="7" rx="3" fill="#7853a1"/>
+    <text x="794" y="214" font-size="16" font-weight="700" fill="#7853a1">03 / SIMULATE IF NEEDED</text>
+    <text x="794" y="253" font-size="25" font-weight="700" fill="#172b46">Slow thinking</text>
+    <text x="794" y="291" font-size="19" fill="#354961">6 particles · 5 rollout rounds</text>
+    <text x="794" y="323" font-size="19" fill="#354961">Predict observation + progress</text>
+    <text x="794" y="355" font-size="19" fill="#354961">Update facts · weight · resample</text>
+    <rect x="794" y="388" width="320" height="48" rx="8" fill="#f4f0fa"/>
+    <text x="954" y="418" font-size="18" text-anchor="middle" fill="#65438c">Simulated facts stay in memory</text>
+
+    <path d="M344,331 H391" fill="none" stroke="#57697e" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="371" y="309" text-anchor="middle" font-size="15" fill="#526178">facts</text>
+    <path d="M718,331 H765" fill="none" stroke="#57697e" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="745" y="291" text-anchor="middle" font-size="15" fill="#526178">after 3</text>
+    <text x="745" y="310" text-anchor="middle" font-size="15" fill="#526178">rejects</text>
+
+    <path d="M545,462 V517" fill="none" stroke="#087c69" stroke-width="2" marker-end="url(#green-arrow)"/>
+    <text x="558" y="496" font-size="16" fill="#087c69">approved action</text>
+    <path d="M954,462 V517" fill="none" stroke="#57697e" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="967" y="496" font-size="16" fill="#526178">planned action</text>
+
+    <rect x="398" y="526" width="738" height="72" rx="12" fill="#172b46"/>
+    <text x="420" y="556" font-size="20" font-weight="700" fill="#ffffff">Execute one action in the environment</text>
+    <text x="420" y="582" font-size="17" fill="#d4dfed">Use the actual outcome to update persistent memory.</text>
+    <path d="M398,562 H194 V469" fill="none" stroke="#57697e" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="214" y="546" font-size="17" fill="#526178">real observation</text>
+    <text x="44" y="628" font-size="16" fill="#526178">Graph context supports both paths. Action permissions remain the environment adapter's responsibility.</text>
+  </g>
+</svg>
