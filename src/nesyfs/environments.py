@@ -16,10 +16,10 @@ class KitchenDemoEnvironment:
     def observe(self) -> str:
         if self.is_complete:
             return "The apple is inside the fridge."
+        door = "open" if self.fridge_open else "closed"
         if self.holding_apple:
-            door = "open" if self.fridge_open else "closed"
             return f"You are holding the apple. The fridge is {door}."
-        return "You are in the kitchen. An apple is on the table. The fridge is closed."
+        return f"You are in the kitchen. An apple is on the table. The fridge is {door}."
 
     def execute(self, action: str) -> str:
         normalized = action.casefold()

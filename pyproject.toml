@@ -1,5 +1,5 @@
 [project]
-name = "major-project"
+name = "nesyfs"
 version = "0.1.0"
 description = "Neuro-symbolic fast-slow LLM agent for partially observable environments"
 readme = "README.md"
@@ -10,6 +10,10 @@ dependencies = [
     "langchain-neo4j>=0.10.0",
     "neo4j>=6.3.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/Shrey327/NeSyFs"
+Paper = "https://arxiv.org/abs/2607.28942v2"
 
 [build-system]
 requires = ["hatchling>=1.27"]
