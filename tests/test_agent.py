@@ -113,3 +113,31 @@ class AgentTests(unittest.TestCase):
                     self.run_step()
                 self.assertEqual(self.graph.upsert.call_count, 1)
                 self.assertEqual(self.llm.extract_memory.call_count, 1)
+
+    def test_trace_reports_observed_progress_in_order(self):
+        events = []
+        result = self.run_step(trace=lambda stage, message, data=None: events.append((stage, message)))
+        self.assertEqual(
+            [stage for stage, _ in events],
+            ["memory", "memory", "proposal", "reflection", "action", "observation", "memory", "complete"],
+        )
+        self.assertIn("5/5", events[3][1])
+        self.assertIn(result.action, events[4][1])
+        self.assertEqual(events[5][1], result.observation)
+
+    def test_trace_reports_rejection_and_planning(self):
+        self.llm.reflect.return_value = Reflection(aligned=False, feedback="Try another action")
+        events = []
+        result = self.run_step(trace=lambda stage, message, data=None: events.append((stage, message)))
+        self.assertTrue(result.planning_used)
+        self.assertEqual(sum(stage == "reflection" for stage, _ in events), 3)
+        self.assertTrue(any(stage == "reflection" and "Rejected" in message for stage, message in events))
+        self.assertTrue(any(stage == "planning" and "open fridge" in message for stage, message in events))
+
+    def test_observation_is_traced_before_outcome_memory_failure(self):
+        self.llm.extract_memory.side_effect = [MemoryDelta(), RuntimeError("memory failed")]
+        events = []
+        with self.assertRaisesRegex(RuntimeError, "memory failed"):
+            self.run_step(trace=lambda stage, message, data=None: events.append((stage, message)))
+        self.assertEqual(events[-1], ("observation", "You are holding the apple."))
+        self.assertNotIn("complete", [stage for stage, _ in events])

@@ -53,6 +53,13 @@ class KnowledgeGraphTests(unittest.TestCase):
         self.assertEqual(parameters, {"session_id": session_id, "names": [entity_name], "limit": 10})
         self.assertEqual(facts[0].id, "fact-1")
 
+    def test_repeated_triple_merges_instead_of_duplicating(self):
+        tx = MagicMock()
+        Neo4jKnowledgeGraph._apply_delta(tx, "episode-1", [], [])
+        query = tx.run.call_args_list[1].args[0]
+        self.assertIn("subject: row.subject", query)
+        self.assertIn("ON CREATE SET f.id = row.id", query)
+
     def test_upsert_submits_atomic_delta_with_bounded_evidence(self):
         delta = MemoryDelta(
             facts=[ExtractedFact(subject="apple", predicate="on", object="table")],

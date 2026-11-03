@@ -9,6 +9,7 @@
 | Unit tests | None | Behavior under controlled model and database fakes. |
 | Scripted kitchen walkthrough | None | The environment accepts a fixed three-action sequence. |
 | Agent-driven kitchen episode | OpenAI API + Neo4j | A model-backed run of this toy environment, if it completes. |
+| Local comparison lab | Neo4j + selected OpenAI or local MLX model | Matched runs of the included synthetic kitchen tasks; not a paper-benchmark evaluation. |
 | Paper benchmark reproduction | Not provided | Requires benchmark adapters, evaluation tooling and protocol alignment beyond this repository. |
 
 Install the locked dependencies before the first two checks; installation itself may need network access. Do not report either check as evidence of benchmark performance.
@@ -122,6 +123,6 @@ Never include API keys or passwords in the run record.
 
 ## Benchmark reproduction boundary
 
-No dataset download, benchmark adapter, reward aggregation, baseline runner or experiment-results file is included. A reproduction effort would need to add those pieces, align prompts and model settings, reconcile the implementation differences in [the paper map](paper.md#paper-to-code-map), then evaluate across documented task splits and random seeds.
+No paper-benchmark dataset, adapter, benchmark reward aggregation or benchmark baseline runner is included. The comparison lab provides separate local synthetic tasks and ablations. A reproduction effort would need to add the benchmark-specific pieces, align prompts and model settings, reconcile the implementation differences in [the paper map](paper.md#paper-to-code-map), then evaluate across documented task splits and random seeds.
 
 The paper's reported scores should remain separate from any future results obtained with this code.

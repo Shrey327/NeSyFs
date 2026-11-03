@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#050506">
+  <title>NeSyFS Studio</title>
+  <link rel="stylesheet" href="/studio.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#studio">Skip to studio</a>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="mark" aria-hidden="true">N</span><span>NeSyFS</span><em>Studio</em></a>
+    <div class="models" role="radiogroup" aria-label="Model" id="models"><span class="metadata">Checking models…</span></div>
+    <a class="quiet" href="/evaluation.html">Comparison lab ↗</a>
+    <span id="connection">Checking</span>
+  </header>
+
+  <main id="studio">
+    <section class="hero" aria-label="Episode">
+      <div class="hero-main">
+        <div>
+          <span class="hero-kicker">The task</span>
+          <h1 class="hero-title">Put the apple in the fridge.</h1>
+          <p class="hero-copy">A fast policy proposes, reflection votes, a planner steps in when votes fail. Every model call is shown below.</p>
+        </div>
+        <div class="controls">
+          <button id="start" class="primary" type="button">Start episode</button>
+          <button id="step" class="chip" type="button" disabled>Run one step</button>
+          <button id="auto" class="chip" type="button" disabled>Auto-run</button>
+          <span class="step-count"><b id="step-count">0</b> steps</span>
+        </div>
+        <p id="notice" class="notice" role="status" aria-live="polite"></p>
+      </div>
+      <figure class="scene" aria-label="Kitchen state">
+        <svg viewBox="0 0 320 210" role="img" aria-labelledby="scene-title">
+          <title id="scene-title">Kitchen: table, agent and fridge</title>
+          <rect class="floor" x="0" y="176" width="320" height="34"/>
+          <rect class="table-top" x="24" y="128" width="96" height="9" rx="4"/>
+          <rect class="table-leg" x="34" y="137" width="7" height="39"/>
+          <rect class="table-leg" x="103" y="137" width="7" height="39"/>
+          <g class="agent" transform="translate(160 0)">
+            <circle cx="0" cy="74" r="15"/>
+            <rect x="-17" y="92" width="34" height="58" rx="17"/>
+            <rect x="-9" y="148" width="7" height="28" rx="3"/>
+            <rect x="2" y="148" width="7" height="28" rx="3"/>
+          </g>
+          <rect class="fridge-body" x="230" y="40" width="70" height="136" rx="10"/>
+          <rect class="fridge-inside" x="236" y="46" width="58" height="124" rx="6"/>
+          <rect class="fridge-shelf" x="236" y="118" width="58" height="3"/>
+          <g id="apple" class="apple" data-at="table">
+            <circle cx="0" cy="0" r="10"/>
+            <rect class="stem" x="-1" y="-15" width="2.5" height="7" rx="1"/>
+          </g>
+          <g id="door" class="door">
+            <rect x="230" y="40" width="70" height="136" rx="10"/>
+            <rect class="handle" x="238" y="78" width="4" height="34" rx="2"/>
+          </g>
+        </svg>
+        <figcaption><span class="metadata">Observation</span><span id="observation">Start an episode to see what the agent observes.</span></figcaption>
+      </figure>
+    </section>
+
+    <ol class="pipeline" id="pipeline" aria-label="Decision pipeline">
+      <li data-stage="remember"><b>Remember</b><span>Extract facts into the graph</span></li>
+      <li data-stage="propose"><b>Propose</b><span>Fast policy picks an action</span></li>
+      <li data-stage="reflect"><b>Reflect</b><span>Votes check the proposal</span></li>
+      <li data-stage="plan"><b>Plan</b><span>Particles roll out futures</span></li>
+      <li data-stage="act"><b>Act</b><span>Run one action</span></li>
+      <li data-stage="update"><b>Update</b><span>Record the outcome</span></li>
+    </ol>
+
+    <section class="grid">
+      <article class="panel decision">
+        <div class="panel-head"><h2>Decision</h2><span class="metadata" id="decision-meta">This step</span></div>
+        <div id="decision" class="decision-body"><p class="empty">Run a step to see proposals, reflection votes and the chosen action.</p></div>
+      </article>
+
+      <article class="panel graph">
+        <div class="panel-head"><h2>Belief graph</h2><span class="metadata" id="graph-meta">0 facts</span></div>
+        <svg id="graph" viewBox="0 0 400 300" role="img" aria-label="Facts the agent believes"></svg>
+        <ul id="fact-list" class="fact-list"></ul>
+      </article>
+
+      <article class="panel engine">
+        <div class="panel-head"><h2>Inference engine</h2><span class="metadata" id="engine-model">No model</span></div>
+        <div class="metrics" id="metrics"></div>
+        <div class="kv" aria-label="KV cache reuse"><div class="kv-bar"><span id="kv-fill"></span></div><span class="metadata" id="kv-label">KV prefix reuse appears after the first local call</span></div>
+        <h3>Model calls <span class="metadata">· tap a call to see prompt and output</span></h3>
+        <ol id="calls" class="calls"><li class="empty">No calls yet.</li></ol>
+      </article>
+    </section>
+
+    <section class="panel history">
+      <div class="panel-head"><h2>Episode</h2><span class="metadata">Each executed action and what the kitchen reported back</span></div>
+      <ol id="history" class="history-list"><li class="empty">No steps yet.</li></ol>
+    </section>
+
+    <section class="notes">
+      <div class="note"><b>Memo</b><p>Local Qwen runs greedy, so an identical prompt always gives the same answer. Repeated reflection votes and identical planner particles reuse it instead of generating again.</p></div>
+      <div class="note"><b>KV prefix cache</b><p>Each task keeps a fixed instruction prefix, so the MLX server reuses its key/value cache and only prefills the new part. The bar above shows the share reused.</p></div>
+      <div class="note"><b>Token caps</b><p>Each task has its own output cap (128–384 tokens) and thinking is off, so a small model cannot ramble and heat the GPU.</p></div>
+      <div class="note"><b>Honest trace</b><p>You see model-written rationales, votes and outputs, not hidden reasoning. Planner particles are hypothetical and never written to the graph.</p></div>
+    </section>
+  </main>
+</body>
+</html>

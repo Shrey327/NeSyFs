@@ -59,6 +59,57 @@ Wait for the database to report that it has started, then press Ctrl+C to leave 
 
 ### 3. Run a kitchen episode
 
+For the interactive showcase, start Docker and the database, then launch the local UI:
+
+```bash
+docker compose up -d
+uv run --locked --env-file .env python showcase.py
+```
+
+Open <http://127.0.0.1:18765>, pick a model in the top bar (OpenAI or a running local Qwen server), select **Start episode**, then **Run one step** or **Auto-run**. The studio shows the live pipeline stage, each proposal with its reflection votes, planner rollouts when used, the belief graph, and every model call with latency, tokens and KV-cache reuse (tap a call for its prompt and output). The kitchen drawing follows the simulator state. The showcase supports the apple-and-fridge task only. It binds to localhost and is intended for local use.
+
+The showcase defaults to `gpt-6-luna`, one reflection vote and attempt, and one planner particle and rollout step to reduce cost. Explicit `NESYFS_*` settings in `.env` override these defaults; for example, `.env.example` selects `gpt-4.1-mini`. These reduced settings differ from the research-oriented defaults described below. Each step makes multiple paid model calls, and model output and completion are not guaranteed. The event trace shows model-supplied rationale and observable system events, not hidden reasoning. Graph facts may include duplicates.
+
+Stop the UI with Ctrl+C. Stop the database with `docker compose stop` (its data volume is retained). If port 18765 is busy, pass `--port 18766` and open that port instead.
+
+### Compare configurations
+
+Open **Comparison lab** in the showcase header, or visit <http://127.0.0.1:18765/evaluation.html>. Select one or more toy-kitchen scenarios, a repeat count, and a decision budget. Each task is run with the same model, initial observation, action grammar and budget under four configurations: reactive (current observation), history (prior actions and observations), graph memory plus reflection, and full adaptive (graph and reflection with planner fallback). Each episode has fresh environment state and a unique graph session. A rejected decision in the no-planner ablation consumes one decision without executing an action. These are comparisons of this implementation, not the paper's benchmark baselines.
+
+Four complex scenarios add locked containers and keys, washing, multiple objects, and goals that require restoring doors or the tap. They expose the same initial observations and rules to every configuration; later observations report the action outcome rather than the entire state. Changes are deterministic effects of actions, not timed disturbances. The dashboard's reference lengths are feasible solutions, not proven optima; choose at least that many decisions. The showcase defaults to one planner particle and one rollout, which do not provide meaningful particle diversity. Set `NESYFS_PARTICLE_COUNT` and `NESYFS_PLANNING_HORIZON` in `.env` to larger values for planning experiments, and expect more model calls and latency.
+
+**Local model on this Mac.** An existing MLX runtime and Qwen3-1.7B 4-bit model can be used without downloading weights. In a separate terminal start the loopback-only server:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ~/Documents/Stillroom/.venv/bin/mlx_lm.server \
+  --model ~/Documents/stillroom-pr12-home/.models/assistant-qwen3-1.7b \
+  --host 127.0.0.1 --port 18768 --allowed-origins http://127.0.0.1:18768 \
+  --chat-template-args '{"enable_thinking":false}' --max-tokens 384 \
+  --prompt-cache-size 16 --prompt-cache-bytes 1GB
+```
+
+Then start the showcase as above and choose **Local MLX · Qwen3 1.7B 4-bit** in Comparison Lab. This local option does not use the OpenAI key or fall back to OpenAI; Neo4j is still required. The paths refer to existing software and weights on this Mac, not files installed by this project. Model readiness only means the expected server and model were found. MLX does not enforce the JSON schema: the client validates responses and allows at most one correction for invalid JSON or schema output; a second invalid response stops the episode. The small model can still return incorrect facts or decisions. Local token counts are usage measurements, not API charges.
+
+An optional, larger local model already on this Mac is **Qwen3-4B-Instruct-2507 4-bit**. To use it, run another local server and select the 4B option in the dashboard:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ~/Documents/Stillroom/.venv/bin/mlx_lm.server \
+  --model ~/Documents/Stillroom/.models/writer-qwen3-4b \
+  --host 127.0.0.1 --port 18771 --allowed-origins http://127.0.0.1:18771 \
+  --chat-template-args '{"enable_thinking":false}' --max-tokens 384 \
+  --prompt-cache-size 16 --prompt-cache-bytes 1GB
+```
+
+**Local inference load.** Local calls use greedy decoding, so the client memoizes exact repeated prompts (repeated reflection votes, identical planner particles) instead of generating again; each task has its own output cap (128–384 tokens), and any `<think>` block is stripped. The server flags above keep the MLX prefix KV cache bounded to 1 GB; each task keeps a fixed instruction prefix so later calls reuse it. Re-observed facts update the existing graph fact instead of adding a duplicate, so prompts no longer grow every step.
+
+The two local models are separate choices, not interchangeable measurements. Use a single provider and model for all conditions within a comparison. Both servers expose only local endpoints and have basic development-server security; do not expose them to a network.
+
+Success comes from the simulator's goal state; the dashboard also shows actions, invalid or no-op actions, planner uses, elapsed time, errors, and provider-reported token usage where available. An error is reported separately even if an action changed the environment. Token totals can omit provider transport retries and are not an invoice; cost is not estimated. Runs are written incrementally to the Git-ignored `results/` directory. Settings, run order, source hashes, and the planner seed are recorded, but remote model responses and timing may vary even with the same seed. A run stopped by an error or interruption can be incomplete.
+
+OpenAI episodes make live paid API calls; the MLX option uses the local model instead. Start with one task and one repeat; more tasks, repeats, decisions, or larger reflection/planning settings can greatly increase cost or local runtime. These scenarios are a small synthetic pilot, not ALFWorld, WebShop or ScienceWorld, and their results do not establish statistical significance or universal improvement. Paper-reported numbers remain separate in [the paper comparison](docs/paper.md).
+
+Alternatively, run the agent in the terminal:
+
 ```bash
 uv run --locked --env-file .env python main.py \
   --session-id "kitchen-$(date +%Y%m%d-%H%M%S)" \
