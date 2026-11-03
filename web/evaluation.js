@@ -118,12 +118,13 @@
       [names[method] || method, `${successes} / ${valid.length}`, errors, totalActions ?? 'Unavailable', invalid ?? 'Unavailable', planner ?? 'Unavailable', formatTime(elapsed), tokens == null ? 'Unavailable' : tokens.toLocaleString()].forEach(value => addCell(row, value));
       ui.body.append(row);
     }
-    ui.episodeCount.textContent = `${episodes.length} RECORDED`;
+    ui.episodeCount.textContent = `${episodes.length} recorded`;
     ui.episodes.replaceChildren();
     if (!episodes.length) { ui.episodes.append(el('p', 'No episodes have been recorded for this run yet.', 'muted')); return; }
     episodes.forEach((ep, index) => {
       const details = el('details', null, 'episode'), summary = el('summary');
-      summary.append(el('strong', `${String(index + 1).padStart(2, '0')}  ${names[ep.method] || ep.method || 'Configuration'} · ${ep.task_id || 'Task'}`), el('span', ep.error || ep.status === 'error' ? (ep.success ? 'ERROR · GOAL REACHED' : 'ERROR') : ep.success ? 'SUCCESS' : (ep.status || 'NOT COMPLETE').replaceAll('_', ' ').toUpperCase()));
+      const failed = ep.error || ep.status === 'error';
+      summary.append(el('strong', `${String(index + 1).padStart(2, '0')}  ${names[ep.method] || ep.method || 'Configuration'} · ${ep.task_id || 'Task'}`), el('span', failed ? (ep.success ? 'Error · goal reached' : 'Error') : ep.success ? 'Success' : (ep.status || 'not complete').replaceAll('_', ' '), failed ? 'bad' : ep.success ? 'ok' : ''));
       const content = el('div', null, 'episode-content');
       content.append(el('p', `Task: ${ep.task || ep.task_id || 'Unavailable'}`));
       if (ep.scenario) content.append(el('p', [ep.scenario.difficulty ? `Difficulty: ${ep.scenario.difficulty}` : null, Number.isFinite(ep.scenario.min_actions) && ep.scenario.min_actions > 0 ? `Feasible reference: ${ep.scenario.min_actions} steps (not a proven minimum)` : null].filter(Boolean).join(' · ')));
@@ -133,7 +134,8 @@
       const actions = Array.isArray(ep.actions) ? ep.actions : [];
       if (actions.length) {
         const list = el('ol');
-        actions.forEach(action => list.append(el('li', `${action.action || 'Action unavailable'}${action.invalid ? ' [invalid]' : ''}${action.planning_used ? ' [planner used]' : ''} → ${action.observation || 'Observation unavailable'}`)));
+        // A repeated action right after itself usually means the agent is stuck in a loop.
+        actions.forEach((action, i) => { const repeat = i > 0 && action.action === actions[i - 1].action; list.append(el('li', `${action.action || 'Action unavailable'}${action.invalid ? ' [invalid]' : ''}${action.planning_used ? ' [planner used]' : ''}${repeat ? ' [repeated]' : ''} → ${action.observation || 'Observation unavailable'}`, repeat ? 'repeat' : null)); });
         content.append(list);
       } else content.append(el('p', 'No environment actions recorded.'));
       if (Number.isFinite(ep.rejected_decisions) && ep.rejected_decisions) content.append(el('p', `Rejected decisions without execution: ${ep.rejected_decisions}`));

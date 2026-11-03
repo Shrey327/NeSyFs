@@ -129,6 +129,12 @@ class RecordedEnvironment:
         return observation
 
 
+def _after(action, outcome):
+    """Name the action an outcome belongs to. Outcomes alone ("nothing changed")
+    give greedy decoding the same input again, so it repeats the failed action."""
+    return f"Result of your last action '{action}': {outcome}"
+
+
 def _episode(scenario, method, settings, llm, graph, action_budget, seed):
     env = EvaluationKitchen(scenario)
     session_id = str(uuid4())
@@ -160,10 +166,13 @@ def _episode(scenario, method, settings, llm, graph, action_budget, seed):
                 proposal = llm.propose_action(scenario.task, context, [])
                 new_observation = recorder.execute(proposal.action)
                 history.append(f"Action: {proposal.action}\nObservation: {new_observation}")
-                observation = new_observation
+                observation = _after(proposal.action, new_observation)
             else:
+                verdicts = []
                 def emit(stage, message, data=None):
                     nonlocal planner_uses
+                    if stage == "reflection" and data:
+                        verdicts.append(data)
                     if stage == "planning" and message.startswith("Reflection rejected"):
                         if method == "adaptive":
                             planner_uses += 1
@@ -174,10 +183,17 @@ def _episode(scenario, method, settings, llm, graph, action_budget, seed):
                 try:
                     result = agent.step(session_id, scenario.task, observation, recorder,
                                         previous_action=previous_action, trace=emit)
-                    observation = result.observation
+                    observation = _after(result.action, result.observation)
                 except NoPlanning:
                     rejected += 1
                     trace.append({"stage": "rejection", "message": "Rejected decision; no action was executed."})
+                    # Nothing changed in the environment, so without this the next decision
+                    # gets the identical prompt and greedy decoding repeats the same rejection.
+                    if verdicts:
+                        last = verdicts[-1]
+                        notes = "; ".join(v["feedback"] for v in last["votes"] if not v["aligned"] and v["feedback"])
+                        observation = (f"{observation}\nYour proposal '{last['action']}' was rejected "
+                                       f"and not executed: {notes or 'no reason given'}")
             # One rejected decision consumes a turn; this prevents unbounded retries.
         status = "completed" if env.is_complete else "budget_exhausted"
     except Exception as exc:

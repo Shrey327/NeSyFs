@@ -3,50 +3,86 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f4ee">
-  <title>NeSyFS — Comparison Lab</title>
-  <link rel="stylesheet" href="/style.css">
+  <meta name="theme-color" content="#050506">
+  <title>NeSyFS Comparison Lab</title>
+  <link rel="stylesheet" href="/studio.css">
   <link rel="stylesheet" href="/evaluation.css">
   <script defer src="/evaluation.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/" aria-label="NeSyFS Agent Studio home"><span class="brand-icon">N<span>✳</span></span><span>NeSyFS <em>/ Comparison Lab</em></span></a>
-    <a class="back-link" href="/">← Agent Studio</a>
+  <a class="skip" href="#lab">Skip to lab</a>
+  <header class="topbar lab-topbar">
+    <a class="brand" href="/"><span class="mark" aria-hidden="true">N</span><span>NeSyFS</span><em>Lab</em></a>
+    <span></span>
+    <a class="quiet" href="/">← Agent studio</a>
   </header>
-  <main>
-    <section class="lab-intro">
-      <div><p class="eyebrow"><span>●</span> LOCAL EVALUATION <span class="eyebrow-line"></span> MATCHED TASKS</p><h1>Compare the <i>loops</i><span class="period">.</span></h1><p class="lede">Four agent configurations, matched on the same kitchen tasks. Compare decisions and inspect how each configuration responds as the state changes.</p></div>
-      <aside class="note"><span class="section-number">READ THE RESULTS WITH CARE</span><p>These are local measurements from a small simulator—not the paper’s benchmark scores.</p><span>NO CLAIM OF STATISTICAL SIGNIFICANCE ↗</span></aside>
+
+  <main id="lab">
+    <section class="hero" aria-label="Comparison lab">
+      <div class="hero-main">
+        <div>
+          <span class="hero-kicker">Comparison lab</span>
+          <h1 class="hero-title">Compare the loops.</h1>
+          <p class="hero-copy">Four agent configurations on the same kitchen tasks, model and decision budget. Local measurements from a small simulator, not the paper's benchmark scores.</p>
+        </div>
+        <p class="hero-fine">No claim of statistical significance.</p>
+      </div>
+      <ol class="method-list" aria-label="Configurations compared">
+        <li><span>01</span><div><h4>Reactive</h4><p>Last action and its result.</p></div></li>
+        <li><span>02</span><div><h4>History</h4><p>Adds every prior action and observation.</p></div></li>
+        <li><span>03</span><div><h4>Graph + reflection</h4><p>Retrieved facts, and votes check each proposal.</p></div></li>
+        <li><span>04</span><div><h4>Full adaptive</h4><p>Falls back to particle planning after rejections.</p></div></li>
+      </ol>
     </section>
-    <section class="lab-workspace" aria-label="Comparison workspace">
-      <div class="heading-row"><div><span class="section-number">01 / EXPERIMENT</span><h2>Set up a comparison<span class="period">.</span></h2></div><p>Same tasks, model and decision budget<br><strong>across every configuration.</strong></p></div>
-      <div class="experiment-grid">
-        <form id="run-form" class="panel setup">
-          <div class="panel-heading"><div><span class="card-label">RUN A LOCAL PILOT</span><h3>Choose the tasks</h3></div><span class="badge">MODEL-BACKED RUN</span></div>
-          <p class="supporting">Start with one complex task. Each selected task runs for all four configurations. The selected provider is used for the entire comparison.</p>
-          <div class="provider-control"><label for="provider">Model provider</label><div class="provider-row"><select id="provider" disabled><option>Checking providers…</option></select><button id="refresh-providers" type="button" class="refresh-button">Check again</button></div><p id="provider-status" class="provider-status" role="status" aria-live="polite">Checking model availability…</p></div><fieldset><legend>Matched task instances</legend><div id="task-options" class="task-options"><p class="muted">Loading available tasks…</p></div></fieldset>
-          <p class="fine-print task-hint">Scroll the task list to see all scenarios. Reference steps show one feasible solution length, not a proven minimum. Select a larger decision budget to leave room for recovery and rejected decisions.</p><details class="task-rules"><summary>How these tasks work</summary><p>Every method receives the same initial layout and command rules. Later observations contain action outcomes, so agents must retain relevant state. The kitchen changes deterministically in response to actions; there are no autonomous or timed disturbances. Complex goals can require a key, washing, multiple objects, and restoring a door or tap.</p><p>Success is checked against the environment’s actual goal state, including any required cleaning or restoration. Planning only occurs if reflection rejects proposals and is not guaranteed to be used.</p></details><div class="field-row"><label for="budget">Decision budget <span>per episode</span></label><input id="budget" type="number" min="1" max="20" value="14" required></div>
-          <div class="field-row"><label for="repeats">Repeats <span>per task and configuration</span></label><input id="repeats" type="number" min="1" max="3" value="1" required></div><p id="setup-details" class="fine-print">A rejected decision consumes one opportunity. Model and settings are recorded with every run.</p>
-          <button class="button primary" id="run-button" type="submit" disabled><span>Run comparison</span><span aria-hidden="true">↗</span></button>
-          <p id="run-message" class="notice" role="status" aria-live="polite" hidden></p>
-          <div id="progress" class="progress" aria-live="polite" hidden><div class="progress-head"><span id="progress-label">Preparing experiment…</span><span id="progress-count"></span></div><div class="progress-track"><span id="progress-fill"></span></div><p id="progress-current"></p></div>
-        </form>
-        <article class="panel methods"><div class="panel-heading"><div><span class="card-label">FOUR CONFIGURATIONS</span><h3>What is being compared?</h3></div><span class="card-index">01—04</span></div>
-          <div class="method-list"><div><span>01</span><div><h4>Reactive</h4><p>Chooses from the task and current observation.</p></div></div><div><span>02</span><div><h4>History</h4><p>Adds prior actions and observations to the prompt.</p></div></div><div><span>03</span><div><h4>Graph + reflection</h4><p>Uses retrieved facts and checks a proposed action.</p></div></div><div><span>04</span><div><h4>Full adaptive</h4><p>Can fall back to planning after reflection rejects proposals.</p></div></div></div>
-          <p class="method-footnote">An ablation comparison reveals differences on these tasks; it does not establish a universal improvement. The planner is only triggered after rejection and may never be used.</p>
-        </article>
+
+    <section class="experiment-grid">
+      <form id="run-form" class="panel setup">
+        <div class="panel-head"><h2>Set up a run</h2><span class="badge">Model-backed</span></div>
+        <div class="provider-control">
+          <label for="provider">Model</label>
+          <div class="provider-row"><select id="provider" disabled><option>Checking providers…</option></select><button id="refresh-providers" type="button" class="chip">Check again</button></div>
+          <p id="provider-status" class="provider-status" role="status" aria-live="polite">Checking model availability…</p>
+        </div>
+        <fieldset><legend>Tasks</legend><div id="task-options" class="task-options"><p class="muted">Loading available tasks…</p></div></fieldset>
+        <div class="field-pair">
+          <div class="field-row"><label for="budget">Decision budget <span>per episode</span></label><input id="budget" type="number" min="1" max="20" value="14" required></div>
+          <div class="field-row"><label for="repeats">Repeats <span>per task and config</span></label><input id="repeats" type="number" min="1" max="3" value="1" required></div>
+        </div>
+        <p id="setup-details" class="fine-print">A rejected decision consumes one opportunity. Model and settings are recorded with every run.</p>
+        <button class="primary" id="run-button" type="submit" disabled><span>Run comparison</span></button>
+        <p id="run-message" class="lab-notice" role="status" aria-live="polite" hidden></p>
+        <div id="progress" class="progress" aria-live="polite" hidden><div class="progress-head"><span id="progress-label">Preparing experiment…</span><span id="progress-count"></span></div><div class="progress-track"><span id="progress-fill"></span></div><p id="progress-current"></p></div>
+      </form>
+
+      <article class="panel rules">
+        <div class="panel-head"><h2>How the tasks work</h2></div>
+        <p>Every configuration gets the same starting layout and command rules. After that, observations report only what the last action did, so an agent has to keep track of state itself.</p>
+        <p>Each new observation names the action it came from. Without that, greedy decoding sees the same input after a failed action and repeats it.</p>
+        <p>Complex goals can need a key, washing, several objects, and closing a door or the tap. Success is checked against the simulator's real goal state.</p>
+        <p class="fine-print">Reference step counts are one feasible solution, not a proven minimum. Planning only runs after reflection rejects proposals, so it may never run.</p>
+      </article>
+    </section>
+
+    <section class="panel results-panel" aria-label="Experiment results">
+      <div class="results-toolbar">
+        <h2>Results</h2>
+        <label class="run-select-label" for="run-select"><span class="metadata">Run</span><select id="run-select" disabled><option>No runs yet</option></select></label>
+      </div>
+      <div id="results-empty" class="results-empty"><strong>No measurements yet.</strong><p>Run a comparison to fill this table with recorded episodes.</p></div>
+      <div id="result-content" hidden>
+        <div id="run-meta" class="run-meta"></div>
+        <div class="table-scroll"><table><caption>Results grouped by agent configuration</caption><thead><tr><th scope="col">Configuration</th><th scope="col">Success / evaluable</th><th scope="col">Errors</th><th scope="col">Actions</th><th scope="col">Invalid</th><th scope="col">Planner uses</th><th scope="col">Elapsed</th><th scope="col">Tokens</th></tr></thead><tbody id="results-body"></tbody></table></div>
+        <p class="fine-print">Success comes from the environment's goal state. Evaluable means completed or budget-exhausted; errored episodes are left out of the success denominator. Token usage is never estimated. Compare configurations within one run.</p>
+        <div class="episode-header"><h3>Episodes</h3><span id="episode-count" class="badge"></span></div>
+        <div id="episodes" class="episodes"></div>
       </div>
     </section>
-    <section class="results-section" aria-label="Experiment results">
-      <div class="heading-row"><div><span class="section-number">02 / RESULTS</span><h2>Read the evidence<span class="period">.</span></h2></div><p>Actual recorded episodes only.<br><strong>Errors and incomplete episodes are shown separately.</strong></p></div>
-      <div class="panel results-panel"><div class="results-toolbar"><div><span class="card-label">LOCAL RUNS</span><h3>Comparison overview</h3></div><label class="run-select-label" for="run-select">Select run<select id="run-select" disabled><option>No runs yet</option></select></label></div>
-        <div id="results-empty" class="results-empty"><div class="empty-icon">↗</div><div><strong>No measurements yet.</strong><p>Run a comparison to populate this table with real episode results.</p></div></div>
-        <div id="result-content" hidden><div id="run-meta" class="run-meta"></div><div class="table-scroll"><table><caption>Results grouped by agent configuration</caption><thead><tr><th scope="col">Configuration</th><th scope="col">Success / evaluable</th><th scope="col">Errors / incomplete</th><th scope="col">Actions</th><th scope="col">Invalid</th><th scope="col">Planner uses</th><th scope="col">Elapsed</th><th scope="col">Tokens</th></tr></thead><tbody id="results-body"></tbody></table></div><p class="table-note">Success is based on the environment’s goal state. Evaluable includes completed and budget-exhausted episodes; errored and incomplete episodes are excluded from the success denominator. Other figures are totals across recorded episodes. Unavailable token usage is not estimated. Actual charges are not captured by this runner. Local and remote runs may use different models; compare conditions within the same run.</p><div class="episode-header"><div><span class="card-label">EPISODE RECORDS</span><h3>Inspect what happened</h3></div><span id="episode-count" class="badge"></span></div><div id="episodes" class="episodes"></div></div>
-      </div>
+
+    <section class="notes lab-notes">
+      <div class="note"><b>Controlled comparison</b><p>Same tasks, model and budget for every configuration. Each episode gets fresh environment state and its own graph session.</p></div>
+      <div class="note"><b>Measure the limits</b><p>Small pilot runs are demonstrations, not statistical proof. Output, latency and cost can vary.</p></div>
+      <div class="note"><b>Paper results are separate</b><p>This independent implementation and toy environment do not reproduce the paper's benchmarks.</p></div>
     </section>
-    <section class="interpret"><div><span class="section-number">03 / INTERPRETATION</span><h2>Useful evidence,<br><i>not a final verdict.</i></h2></div><div class="interpret-grid"><div><h3>Controlled comparison</h3><p>Every configuration receives the same selected tasks, provider, model and decision budget. Episodes use fresh environment state and isolated graph sessions. Earlier runs may use a different scenario version and should not be pooled.</p></div><div><h3>Measure the limits</h3><p>Small, stochastic pilot runs are demonstrations—not statistical proof. Model output, latency, and costs can vary. Reference solutions are feasible examples, not proven shortest paths.</p></div><div><h3>Paper results are separate</h3><p>This independent implementation and toy environment do not reproduce the paper’s benchmark results.</p></div></div></section>
   </main>
-  <footer><a class="brand footer-brand" href="/">NeSyFS <em>/ Agent Studio</em></a><span>LOCAL EXPERIMENTS · REAL EPISODES</span><span>MEASURE WITH CARE ↗</span></footer>
 </body>
 </html>

@@ -58,6 +58,7 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(result['decision_count'], 3)
         self.assertEqual(reactive.contexts[0].split('\n\n')[0], history.contexts[0].split('\n\n')[0])
         self.assertNotIn('Initial observation:', reactive.contexts[1])
+        self.assertTrue(reactive.contexts[1].startswith("Result of your last action 'open fridge':"))
         self.assertIn('Initial observation:', history.contexts[1])
 
     def test_rejected_ablation_consumes_budget_without_action_or_planning(self):
@@ -67,6 +68,12 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(result['rejected_decisions'], 2)
         self.assertEqual(result['planner_uses'], 0)
         self.assertEqual(result['actions'], [])
+
+    def test_rejection_feedback_reaches_the_next_decision(self):
+        model = FakeModel(aligned=False)
+        evaluation._episode(SCENARIOS[0], 'graph_reflection', SETTINGS, model, FakeGraph(), 2, 42)
+        self.assertNotIn('was rejected', model.contexts[0])
+        self.assertIn('was rejected and not executed: no', model.contexts[1])
 
     def test_adaptive_runs_planner_after_rejection(self):
         result = evaluation._episode(SCENARIOS[0], 'adaptive', SETTINGS,
