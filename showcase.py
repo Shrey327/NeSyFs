@@ -11,6 +11,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from dotenv import load_dotenv
+
+from nesyfs.evaluation import METHODS
 from nesyfs import KitchenDemoEnvironment, NeSyFSAgent, Neo4jKnowledgeGraph, NeSyFSLanguageModel, Settings, TSMCPlanner
 
 TASK = "Put the apple in the fridge"
@@ -32,8 +35,14 @@ class EvaluationManager:
     def __init__(self, results=RESULTS):
         self.results = results
         self.lock = threading.Lock()
+        self.cancel_event = threading.Event()
+        self.active_path = None
         self.state = {"running": False, "completed": 0, "total": 0,
-                      "current_task": None, "current_method": None, "provider": None, "error": None}
+                      "current_task": None, "current_method": None, "provider": None, "error": None,
+                      "task_ids": [], "action_budget": None, "repeats": None,
+                      "current_decision": 0, "current_trial": 0, "current_stage": None,
+                      "current_episode_id": None, "current_events": [], "current_actions": [], "current_budget": None,
+                      "cancel_requested": False, "warning": None}
 
     @staticmethod
     def config():
@@ -54,17 +63,29 @@ class EvaluationManager:
 
     def history(self):
         runs = []
+        with self.lock:
+            active_path = self.active_path if self.state["running"] else None
         if self.results.exists():
             for path in sorted(self.results.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
                 try:
                     with path.open(encoding="utf-8") as source:
                         run = json.load(source)
                     if isinstance(run, dict):
+                        if run.get("status") == "running":
+                            run["tracking"] = "active" if path == active_path else "unmonitored"
                         runs.append(run)
                 except (OSError, ValueError):
                     logging.warning("Could not read an evaluation result file")
         runs.sort(key=lambda run: str(run.get("created_at") or ""), reverse=True)
         return {"runs": runs}
+
+    def cancel(self):
+        with self.lock:
+            if not self.state["running"]:
+                raise UserError("No evaluation is running.")
+            self.cancel_event.set()
+            self.state["cancel_requested"] = True
+        return self.status()
 
     def start(self, payload):
         config = self.config()
@@ -91,26 +112,54 @@ class EvaluationManager:
         with self.lock:
             if self.state["running"]:
                 raise UserError("An evaluation is already running.")
-            self.state = {"running": True, "completed": 0, "total": len(ids) * repeats * 4,
-                          "current_task": None, "current_method": None, "provider": provider, "error": None}
-        path = self.results / f"{uuid.uuid4()}.json"
+            self.cancel_event.clear()
+            path = self.results / f"{uuid.uuid4()}.json"
+            self.active_path = path
+            self.state = {"running": True, "completed": 0, "total": len(ids) * repeats * len(METHODS),
+                          "current_task": None, "current_method": None, "provider": provider, "error": None,
+                          "task_ids": list(ids), "action_budget": steps, "repeats": repeats,
+                          "current_decision": 0, "current_trial": 0, "current_stage": None,
+                          "current_episode_id": None, "current_events": [], "current_actions": [], "current_budget": None,
+                          "cancel_requested": False, "warning": None}
         def work():
             try:
                 from nesyfs.evaluation import run_comparison
                 self.results.mkdir(parents=True, exist_ok=True)
                 def on_start(task_id, method, repeat):
                     with self.lock:
-                        self.state.update(current_task=task_id, current_method=method)
+                        self.state.update(current_task=task_id, current_method=method,
+                                          current_decision=0, current_trial=0, current_stage=None,
+                                          current_episode_id=None, current_events=[], current_actions=[],
+                                          current_budget=None)
                 def on_episode(run):
                     with self.lock:
                         self.state["completed"] = len(run["episodes"])
+                def on_progress(snapshot):
+                    with self.lock:
+                        events = snapshot.get("trace", [])
+                        # Prompts are large and not shown live; drop them so more decisions fit.
+                        recent = [{**event, "data": {k: v for k, v in event["data"].items() if k != "prompt"}}
+                                  if isinstance(event.get("data"), dict) else event for event in events[-80:]]
+                        self.state.update(current_decision=snapshot["decision_count"],
+                                          current_trial=snapshot["current_trial"],
+                                          current_stage=events[-1]["stage"] if events else None,
+                                          current_episode_id=snapshot["episode_id"], current_events=recent,
+                                          current_actions=[{k: a.get(k) for k in ("action", "observation", "invalid", "planning_used", "trial", "decision")}
+                                                           for a in snapshot.get("actions", [])],
+                                          current_budget=snapshot.get("trial_budgets"))
                 result = run_comparison(settings=settings, task_ids=ids,
-                               methods=["reactive", "history", "graph_reflection", "adaptive"],
+                               methods=list(METHODS),
                                action_budget=steps, output_path=path, seed=42,
-                               repeats=repeats, on_start=on_start, on_episode=on_episode)
+                               repeats=repeats, on_start=on_start, on_episode=on_episode,
+                               on_progress=on_progress, cancel_event=self.cancel_event)
                 if result.get("status") == "error":
                     with self.lock:
-                        self.state["error"] = "Evaluation stopped after an error; see saved partial results."
+                        self.state["error"] = result.get("error") or "Evaluation stopped; see saved partial results."
+                elif result.get("status") in ("cancelled", "completed_with_errors"):
+                    with self.lock:
+                        self.state["warning"] = ("Evaluation cancelled; remaining episodes were not run."
+                                                 if result["status"] == "cancelled" else
+                                                 "Evaluation completed with episode errors; inspect the results.")
             except Exception as exc:
                 logging.error("Evaluation failed: %s", type(exc).__name__)
                 with self.lock:
@@ -118,6 +167,7 @@ class EvaluationManager:
             finally:
                 with self.lock:
                     self.state.update(running=False, current_task=None, current_method=None)
+                    self.active_path = None
         threading.Thread(target=work, name="evaluation", daemon=True).start()
         return self.status()
 
@@ -158,7 +208,8 @@ class Showcase:
             try:
                 graph.verify_connection()
                 graph.setup()
-                llm = NeSyFSLanguageModel(settings.model, settings.openai_api_key, provider=provider)
+                llm = NeSyFSLanguageModel(settings.model, settings.openai_api_key, provider=provider,
+                                          sample_temperature=getattr(settings, "sample_temperature", 0.0))
                 planner = TSMCPlanner(llm, settings.particle_count, settings.planning_horizon)
                 agent = NeSyFSAgent(llm, graph, planner, settings.reflection_limit, settings.reflection_samples)
             except Exception:
@@ -250,7 +301,8 @@ def make_handler(showcase):
             return True
 
         def send_json(self, code, data):
-            body = json.dumps(data).encode()
+            from nesyfs.safe_display import safe_display
+            body = json.dumps(safe_display(data)).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -292,7 +344,7 @@ def make_handler(showcase):
             if not self.allowed():
                 self.send_json(403, {"error": "Forbidden"})
                 return
-            if self.path not in ("/api/session", "/api/step", "/api/evaluation/run"):
+            if self.path not in ("/api/session", "/api/step", "/api/evaluation/run", "/api/evaluation/cancel"):
                 self.send_json(404, {"error": "Not found"})
                 return
             try:
@@ -308,6 +360,8 @@ def make_handler(showcase):
                     data = showcase.start(payload.get("task"), payload.get("provider", "openai"))
                 elif self.path == "/api/evaluation/run":
                     data = showcase.evaluation.start(payload)
+                elif self.path == "/api/evaluation/cancel":
+                    data = showcase.evaluation.cancel()
                 else:
                     data = showcase.step(payload.get("session_id"))
                 self.send_json(200, data)
@@ -332,6 +386,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run the local NeSyFS showcase")
     parser.add_argument("--port", type=int, default=18765)
     args = parser.parse_args()
+    load_dotenv(Path(__file__).with_name(".env"))
     for name, value in {"NESYFS_MODEL": "gpt-6-luna", "NESYFS_REFLECTION_LIMIT": "1",
                         "NESYFS_REFLECTION_SAMPLES": "1", "NESYFS_PARTICLE_COUNT": "1",
                         "NESYFS_PLANNING_HORIZON": "1"}.items():

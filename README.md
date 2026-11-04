@@ -74,7 +74,7 @@ Stop the UI with Ctrl+C. Stop the database with `docker compose stop` (its data 
 
 ### Compare configurations
 
-Open **Comparison lab** in the showcase header, or visit <http://127.0.0.1:18765/evaluation.html>. Select one or more toy-kitchen scenarios, a repeat count, and a decision budget. Each task is run with the same model, initial observation, action grammar and budget under four configurations: reactive (last action and its result), history (prior actions and observations), graph memory plus reflection, and full adaptive (graph and reflection with planner fallback). Each episode has fresh environment state and a unique graph session. A rejected decision in the no-planner ablation consumes one decision without executing an action. Every observation after the first names the action it came from, and a rejected proposal's feedback is added to the next decision's observation; without this, greedy decoding sees an identical prompt and repeats the same failed or rejected choice. These are comparisons of this implementation, not the paper's benchmark baselines.
+Open **Comparison lab** in the showcase header, or visit <http://127.0.0.1:18765/evaluation.html>. Select tasks, a repeat count, and a decision budget. Each task and repeat runs six configurations: reactive, history, ReAct-style, Reflexion-style, graph memory plus reflection, and full adaptive. They use the same model, initial observation, command rules, and total decision budget. Reflexion-style splits that budget across up to three fresh attempts and can use a generated lesson between attempts; the public feasible reference length determines how many attempts fit, so each can accommodate that reference when the budget allows. A rejected graph-only decision consumes one decision without an action. Each episode has fresh environment state and a unique graph session. ReAct-style and Reflexion-style are local prompt-based approximations, not reproductions of the published baselines.
 
 Four complex scenarios add locked containers and keys, washing, multiple objects, and goals that require restoring doors or the tap. They expose the same initial observations and rules to every configuration; later observations report the action outcome rather than the entire state. Changes are deterministic effects of actions, not timed disturbances. The dashboard's reference lengths are feasible solutions, not proven optima; choose at least that many decisions. The showcase defaults to one planner particle and one rollout, which do not provide meaningful particle diversity. Set `NESYFS_PARTICLE_COUNT` and `NESYFS_PLANNING_HORIZON` in `.env` to larger values for planning experiments, and expect more model calls and latency.
 
@@ -100,11 +100,11 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ~/Documents/Stillroom/.venv/bin/mlx_lm.s
   --prompt-cache-size 16 --prompt-cache-bytes 1GB
 ```
 
-**Local inference load.** Local calls use greedy decoding, so the client memoizes exact repeated prompts (repeated reflection votes, identical planner particles) instead of generating again; each task has its own output cap (128–384 tokens), and any `<think>` block is stripped. The server flags above keep the MLX prefix KV cache bounded to 1 GB; each task keeps a fixed instruction prefix so later calls reuse it. Re-observed facts update the existing graph fact instead of adding a duplicate, so prompts no longer grow every step.
+**Local inference load.** Comparison runs disable the client-side response memo so one configuration cannot reuse another's outputs or distort its token and timing measurements. The policy defaults to temperature 0; `NESYFS_POLICY_TEMPERATURE` changes policy sampling for all configurations, while `NESYFS_SAMPLE_TEMPERATURE` separately controls reflection and planner sampling. The server flags above bound its prefix KV cache. Re-observed facts update the existing graph fact instead of adding a duplicate. Local outputs are validated, and hidden-thinking tags are not displayed.
 
 The two local models are separate choices, not interchangeable measurements. Use a single provider and model for all conditions within a comparison. Both servers expose only local endpoints and have basic development-server security; do not expose them to a network.
 
-Success comes from the simulator's goal state; the dashboard also shows actions, invalid or no-op actions, planner uses, elapsed time, errors, and provider-reported token usage where available. An error is reported separately even if an action changed the environment. Token totals can omit provider transport retries and are not an invoice; cost is not estimated. Runs are written incrementally to the Git-ignored `results/` directory. Settings, run order, source hashes, and the planner seed are recorded, but remote model responses and timing may vary even with the same seed. A run stopped by an error or interruption can be incomplete.
+Success comes from the simulator's goal state; the dashboard also shows actions, invalid or no-op actions, planner uses, elapsed time, errors, and provider-reported token usage where available. Validated model responses and agent events appear as individual calls complete; this is not token streaming. Stop requests take effect after an in-flight model call completes and before the next action. Runs are written incrementally to the Git-ignored `results/` directory. A saved run that is no longer tracked by the server may be active elsewhere or interrupted. Previous runs used a shared response cache and some used unequal Reflexion budgets, so their timings, usage and comparisons may not be independent. Settings, run order, source hashes, and the planner seed are recorded, but remote model responses and timing may vary even with the same seed.
 
 OpenAI episodes make live paid API calls; the MLX option uses the local model instead. Start with one task and one repeat; more tasks, repeats, decisions, or larger reflection/planning settings can greatly increase cost or local runtime. These scenarios are a small synthetic pilot, not ALFWorld, WebShop or ScienceWorld, and their results do not establish statistical significance or universal improvement. Paper-reported numbers remain separate in [the paper comparison](docs/paper.md).
 
@@ -123,6 +123,27 @@ The CLI prints each chosen action, whether planning was used, the number of refl
 Use a **fresh session ID for each independent episode**. Starting the kitchen again resets its state but does not clear old graph facts. The CLI verifies the database connection and creates uniqueness constraints on startup.
 
 For manual interaction with an external environment, see [examples](examples/README.md#manual-environment). For connection errors, model configuration or cleanup, see [the run guide](docs/reproduction.md).
+
+### Partial-observability benchmark
+
+The paper's claim is about partial observability, so the earlier tasks (which show the whole kitchen in the first observation) cannot test it. Three **hidden** tasks keep the contents of a closed fridge or cupboard out of sight until the agent opens it, so every configuration has to search and remember what it found. They need 6, 9 and 11 reference steps. They and the settings below were fixed before any model was run on them.
+
+[`benchmark.py`](benchmark.py) runs six configurations on them using the paper's reflection and particle counts: 5 reflection votes with 80% approval, 3 proposals before planning, 6 particles and 5 rollout steps. Votes and rollouts are sampled at temperature 0.7; policy temperature defaults to 0 but can be configured separately. These settings do not make this implementation a reproduction of the paper's experiments.
+
+| Configuration | What it sees and does |
+| --- | --- |
+| Reactive | Last action and its result. |
+| History | Every prior action and observation. |
+| ReAct-style | History plus model-supplied rationales; a prompt-based approximation. |
+| Reflexion-style | Up to 3 fresh attempts with model-written lessons, sharing the same total decision budget. |
+| Graph + reflection | NeSyFS memory and reflection votes, no planner. |
+| NeSyFS (full) | Graph memory, reflection votes and particle-planning fallback. |
+
+```bash
+uv run --locked --env-file .env python benchmark.py --provider mlx_4b --repeats 3 --budget 20
+```
+
+Results are saved under `results/` and appear in the Comparison lab. Episode-level errors (for example, invalid JSON twice) are reported separately; fatal service errors stop the run. With the local 4B model, a full run can take hours, mostly in the planner. Report every configuration's result, including errors and cases where NeSyFS does not win.
 
 ## How a step works
 

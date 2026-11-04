@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from nesyfs.eval_env import EvaluationKitchen, SCENARIOS
 
@@ -14,6 +15,9 @@ class EvaluationKitchenTests(unittest.TestCase):
             "wash_pear_fridge": ["take pear", "turn on tap", "wash pear", "open fridge", "put pear in fridge", "turn off tap"],
             "two_items_cupboard": ["open fridge", "take apple", "open cupboard", "put apple in cupboard", "close fridge", "take pear", "put pear in cupboard"],
             "wash_mug_secure": ["take key", "unlock cupboard with key", "put key on counter", "open cupboard", "take mug", "turn on tap", "wash mug", "put mug in fridge", "close cupboard", "turn off tap"],
+            "hidden_apple_search": ["open cupboard", "take apple", "open fridge", "put apple in fridge", "close fridge", "close cupboard"],
+            "hidden_key_search": ["open fridge", "take key", "close fridge", "unlock cupboard with key", "put key on counter", "take apple", "open cupboard", "put apple in cupboard", "close cupboard"],
+            "hidden_swap_wash": ["open fridge", "take mug", "turn on tap", "wash mug", "turn off tap", "open cupboard", "put mug in cupboard", "take pear", "put pear in fridge", "close fridge", "close cupboard"],
         }
         self.assertEqual(set(actions), {s.id for s in SCENARIOS})
         for scenario in SCENARIOS:
@@ -27,6 +31,33 @@ class EvaluationKitchenTests(unittest.TestCase):
                 self.assertTrue(env.is_complete)
                 self.assertEqual(env.invalid_actions, 0)
 
+    def test_hidden_contents_appear_only_when_opened(self):
+        env = EvaluationKitchen(next(s for s in SCENARIOS if s.id == "hidden_key_search"))
+        start = env.observe()
+        self.assertNotIn("key", start)
+        self.assertIn("cannot see inside the closed fridge", start)
+        self.assertIn("cannot be seen until you open it", env.scenario.task)
+        self.assertNotIn("fridge", env.execute("take key"))
+        self.assertEqual(env.execute("open fridge"), "You opened the fridge. Inside: the key.")
+
+    def test_hidden_take_failures_do_not_reveal_locations_or_existence(self):
+        scenario = next(s for s in SCENARIOS if s.id == "hidden_apple_search")
+        alternate = replace(scenario, objects=(("apple", "fridge"), ("pear", "cupboard"), ("mug", "counter")))
+        for command in ("take apple from fridge", "take apple from cupboard", "take apple", "take apple from table"):
+            with self.subTest(command=command):
+                first, second = EvaluationKitchen(scenario), EvaluationKitchen(alternate)
+                self.assertEqual(first.observe(), second.observe())
+                self.assertEqual(first.execute(command), second.execute(command))
+                self.assertEqual((first.invalid_actions, second.invalid_actions), (1, 1))
+                self.assertNotEqual(first.execute("open fridge"), second.execute("open fridge"))
+
+        with_key = replace(scenario, objects=(*scenario.objects, ("key", "cupboard")))
+        for command in ("take key", "take key from cupboard", "take key from fridge", "take key from table"):
+            with self.subTest(command=command):
+                first, second = EvaluationKitchen(scenario), EvaluationKitchen(with_key)
+                self.assertEqual(first.observe(), second.observe())
+                self.assertEqual(first.execute(command), second.execute(command))
+
     def test_failed_and_repeated_actions_count_without_false_success(self):
         env = EvaluationKitchen(SCENARIOS[1])
         self.assertIn("closed", env.execute("take pear"))
@@ -37,6 +68,33 @@ class EvaluationKitchenTests(unittest.TestCase):
         self.assertIn("Invalid", env.execute("teleport pear"))
         self.assertEqual(env.invalid_actions, 4)
         self.assertFalse(env.is_complete)
+
+    def test_concrete_bracketed_arguments_are_equivalent_to_plain_commands(self):
+        scenario = next(s for s in SCENARIOS if s.id == "apple_fridge_cupboard")
+        plain, bracketed = EvaluationKitchen(scenario), EvaluationKitchen(scenario)
+        for left, right in (("open fridge", "open <fridge>"),
+                            ("take apple from fridge", "take <apple> from <fridge>"),
+                            ("open cupboard", "open <cupboard>"),
+                            ("put apple in cupboard", "put <apple> in <cupboard>")):
+            self.assertEqual(plain.execute(left), bracketed.execute(right))
+        self.assertTrue(plain.is_complete)
+        self.assertTrue(bracketed.is_complete)
+        self.assertEqual(bracketed.invalid_actions, 0)
+
+    def test_ambiguous_bracketed_arguments_are_not_guessed(self):
+        scenario = next(s for s in SCENARIOS if s.id == "apple_fridge_cupboard")
+        env = EvaluationKitchen(scenario)
+        self.assertIn("Invalid action", env.execute("open <fridge or cupboard>"))
+        self.assertIn("Invalid action", env.execute("take <apple or pear>"))
+        self.assertEqual(env.invalid_actions, 2)
+        self.assertEqual(env.execute("open fridge"), "You opened the fridge.")
+        self.assertEqual(env.execute("open cupboard"), "You opened the cupboard.")
+        self.assertFalse(env.is_complete)
+
+    def test_brackets_do_not_enable_unsupported_basic_commands(self):
+        env = EvaluationKitchen(SCENARIOS[0])
+        self.assertIn("Invalid action", env.execute("close <fridge>"))
+        self.assertEqual(env.invalid_actions, 1)
 
     def test_outcomes_are_partial_and_instances_are_isolated(self):
         first, second = EvaluationKitchen(SCENARIOS[0]), EvaluationKitchen(SCENARIOS[0])

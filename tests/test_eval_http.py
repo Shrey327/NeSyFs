@@ -72,6 +72,13 @@ class EvaluationHTTPTests(unittest.TestCase):
         def run_comparison(**kwargs):
             observed.append(kwargs)
             kwargs['on_start']('kitchen-1', 'reactive', 0)
+            kwargs['on_progress']({'episode_id': 'episode-1', 'decision_count': 1, 'current_trial': 1,
+                                   'trace': [{'stage': 'model', 'index': 1, 'message': 'completed',
+                                              'data': {'kind': 'propose', 'output': {'action': 'open fridge'}}}]})
+            live = self.app.evaluation.status()
+            self.assertEqual(live['current_episode_id'], 'episode-1')
+            self.assertEqual((live['task_ids'], live['action_budget'], live['repeats']), (['kitchen-1'], 4, 1))
+            self.assertEqual(live['current_events'][0]['stage'], 'model')
             run = {'status': 'complete', 'episodes': [{'task_id': 'kitchen-1'}]}
             kwargs['output_path'].write_text(json.dumps(run))
             kwargs['on_episode'](run)
@@ -88,8 +95,8 @@ class EvaluationHTTPTests(unittest.TestCase):
         self.assertFalse(body['running'])
         self.assertEqual(body['provider'], 'mlx')
         self.assertEqual(body['completed'], 1)
-        self.assertEqual(body['total'], 4)
-        self.assertEqual(observed[0]['methods'], ['reactive', 'history', 'graph_reflection', 'adaptive'])
+        self.assertEqual(body['total'], len(showcase.METHODS))
+        self.assertEqual(observed[0]['methods'], ['reactive', 'history', 'react', 'reflexion', 'graph_reflection', 'adaptive'])
         self.assertEqual(self.get('/api/evaluation/results')[1]['runs'][0]['status'], 'complete')
         self.assertEqual(self.get('/api/evaluation/status')[1]['completed'], 1)
 
@@ -140,6 +147,45 @@ class EvaluationHTTPTests(unittest.TestCase):
         (directory / 'old.json').write_text(json.dumps({'created_at': '2026-11-03T22:00:00+00:00'}))
         runs = self.get('/api/evaluation/results')[1]['runs']
         self.assertEqual(runs[0]['created_at'], '2026-11-03T23:00:00+00:00')
+
+    def test_unmonitored_running_record_is_not_rewritten(self):
+        path = Path(self.tmp.name) / 'external.json'
+        original = json.dumps({'status': 'running', 'created_at': '2026-11-03T23:00:00+00:00'})
+        path.write_text(original)
+        run = self.get('/api/evaluation/results')[1]['runs'][0]
+        self.assertEqual(run['tracking'], 'unmonitored')
+        self.assertEqual(path.read_text(), original)
+        self.app.evaluation.active_path = path
+        self.app.evaluation.state['running'] = True
+        self.assertEqual(self.get('/api/evaluation/results')[1]['runs'][0]['tracking'], 'active')
+
+    def test_json_boundary_sanitizes_without_mutating_source(self):
+        handler = showcase.make_handler(self.app).__new__(showcase.make_handler(self.app))
+        handler.send_response = lambda *args: None
+        handler.send_header = lambda *args: None
+        handler.end_headers = lambda: None
+        handler.wfile = io.BytesIO()
+        source = {'created_at': '2026-01-01', 'data': {'raw': 'private',
+                  'output': '<think>secret</think>visible', 'action': 'open fridge'}}
+        original = json.dumps(source)
+        path = Path(self.tmp.name) / 'record.json'
+        path.write_text(original)
+        handler.send_json(200, self.app.evaluation.history())
+        response = json.loads(handler.wfile.getvalue())
+        self.assertNotIn('raw', response['runs'][0]['data'])
+        self.assertEqual(response['runs'][0]['data']['output'], '[withheld]')
+        self.assertEqual(response['runs'][0]['data']['action'], 'open fridge')
+        self.assertEqual(path.read_text(), original)
+
+    def test_cancel_sets_cooperative_request_without_faking_completion(self):
+        self.app.evaluation.state['running'] = True
+        status, body = self.post('/api/evaluation/cancel', {})
+        self.assertEqual(status, 200)
+        self.assertTrue(body['running'])
+        self.assertTrue(body['cancel_requested'])
+        self.assertTrue(self.app.evaluation.cancel_event.is_set())
+        self.app.evaluation.state['running'] = False
+        self.assertEqual(self.post('/api/evaluation/cancel', {})[0], 400)
 
 
 if __name__ == '__main__':

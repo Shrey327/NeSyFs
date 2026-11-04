@@ -68,6 +68,22 @@ class LocalProviderTests(unittest.TestCase):
             self.assertTrue(llm.predict("store apple", "apple on table", "take apple", []).progress)
             self.assertEqual(model.return_value.invoke.call_count, len(valid))
 
+    def test_small_model_shapes_seen_in_real_runs_are_repaired_not_fatal(self):
+        outputs = [
+            {"facts": [{"subject": "apple", "predicate": "on", "object": "table"},
+                       {"subject": "fridge", "predicate": "closed", "object": ""},
+                       {"subject": "", "predicate": "open", "object": ""}]},
+            {"lesson": {"title": "Storage", "lesson": "Open the fridge first."}},
+        ]
+        with patch("nesyfs.llm.ChatOpenAI") as model, patch("nesyfs.llm.create_agent"):
+            model.return_value.invoke.side_effect = [SimpleNamespace(content=json.dumps(value)) for value in outputs]
+            llm = NeSyFSLanguageModel(MLX_MODEL, "", provider="mlx")
+            facts = llm.extract_memory("observe", "apple on table; fridge closed", []).facts
+            self.assertEqual([(f.subject, f.predicate, f.object) for f in facts],
+                             [("apple", "on", "table"), ("fridge", "is", "closed")])
+            self.assertEqual(llm.lesson("store apple", "attempt").lesson, "Open the fridge first.")
+            self.assertEqual(model.return_value.invoke.call_count, len(outputs))
+
     def test_invalid_local_response_retries_once_then_fails_without_cloud_fallback(self):
         with patch("nesyfs.llm.ChatOpenAI") as model, patch("nesyfs.llm.create_agent") as agent:
             model.return_value.invoke.return_value = SimpleNamespace(content="not json")
@@ -112,6 +128,85 @@ class LocalProviderTests(unittest.TestCase):
         self.assertEqual([call["memo"] for call in calls], [False, True, True, True, True, True])
         self.assertEqual((calls[0]["prompt_tokens"], calls[0]["cached_tokens"], calls[0]["completion_tokens"]), (300, 250, 9))
         self.assertEqual(calls[0]["kind"], "reflect")
+        self.assertNotIn("raw", calls[0])
+
+    def test_reasoning_markers_fail_closed_without_emitting_raw_output(self):
+        unsafe = [
+            '<think>private',
+            '{"action":"take apple","rationale":"<TH' + 'INK>private</think>"}',
+            r'{"action":"take apple","rationale":"\u003cthink\u003eprivate"}',
+            r'{"action":"take apple","rationale":"<th\nink>private"}',
+            '{"action":"take apple","rationale":"< / think>private"}',
+        ]
+        for content in unsafe:
+            with self.subTest(content=content), patch("nesyfs.llm.ChatOpenAI") as model:
+                model.return_value.invoke.return_value = SimpleNamespace(content=content)
+                events = []
+                llm = NeSyFSLanguageModel(MLX_MODEL, "", provider="mlx", on_call=events.append)
+                with self.assertRaisesRegex(ValueError, "reasoning marker"):
+                    llm.propose_action("store apple", "apple on table", [])
+                self.assertEqual(events, [])
+                self.assertFalse(llm._memo)
+
+    def test_sampled_calls_use_sampling_model_and_are_never_reused(self):
+        vote = SimpleNamespace(content='{"aligned": true, "feedback": ""}')
+        names = SimpleNamespace(content='{"names": ["apple"]}')
+        with patch("nesyfs.llm.ChatOpenAI") as model, patch("nesyfs.llm.create_agent"):
+            model.return_value.invoke.side_effect = [vote, vote, vote, names]
+            llm = NeSyFSLanguageModel(MLX_MODEL, "", provider="mlx", sample_temperature=0.7)
+            temperatures = [call.kwargs["temperature"] for call in model.call_args_list]
+            for _ in range(3):
+                llm.reflect("store apple", "apple on table", "take apple", [])
+            llm.extract_entities("apple")
+            llm.extract_entities("apple")
+        self.assertEqual(temperatures, [0, 0.7])
+        self.assertEqual(model.return_value.invoke.call_count, 4)
+        with self.assertRaises(ValueError):
+            NeSyFSLanguageModel(MLX_MODEL, "", provider="mlx", sample_temperature=5)
+
+    def test_evaluation_can_disable_local_memo_even_for_identical_greedy_prompts(self):
+        calls = []
+        with patch("nesyfs.llm.ChatOpenAI") as model, patch("nesyfs.llm.create_agent"):
+            model.return_value.invoke.return_value = SimpleNamespace(content='{"action":"take apple"}')
+            llm = NeSyFSLanguageModel(MLX_MODEL, "", provider="mlx", cache_enabled=False, on_call=calls.append)
+            llm.propose_action("store apple", "apple on table", [])
+            llm.propose_action("store apple", "apple on table", [])
+            self.assertIn("replace angle-bracket placeholders", model.return_value.invoke.call_args.args[0][1][1])
+        self.assertEqual(model.return_value.invoke.call_count, 2)
+        self.assertEqual([call['memo'] for call in calls], [False, False])
+
+    def test_policy_temperature_is_distinct_from_reflection_and_planning_sampling(self):
+        greedy, sampler, policy = MagicMock(), MagicMock(), MagicMock()
+        greedy.invoke.return_value = SimpleNamespace(content='{"names":["apple"]}')
+        sampler.invoke.side_effect = [SimpleNamespace(content='{"aligned":true,"feedback":""}'),
+                                      SimpleNamespace(content='{"action":"open fridge"}')]
+        policy.invoke.return_value = SimpleNamespace(content='{"action":"take apple"}')
+        events = []
+        with patch("nesyfs.llm.ChatOpenAI", side_effect=[greedy, sampler, policy]) as model, patch("nesyfs.llm.create_agent"):
+            llm = NeSyFSLanguageModel(MLX_MODEL, "", provider="mlx", sample_temperature=0.7,
+                                      policy_temperature=0.4, on_call=events.append)
+            llm.propose_action("store apple", "apple on table", [])
+            llm.propose_action("store apple", "apple on table", [])
+            llm.reflect("store apple", "apple on table", "take apple", [])
+            llm.propose_action("store apple", "apple on table", [], sampled=True)
+            llm.extract_entities("apple")
+        self.assertEqual([c.kwargs['temperature'] for c in model.call_args_list], [0, 0.7, 0.4])
+        self.assertEqual(policy.invoke.call_count, 2)
+        self.assertEqual(sampler.invoke.call_count, 2)
+        self.assertEqual(greedy.invoke.call_count, 1)
+        self.assertEqual([event['temperature'] for event in events], [0.4, 0.4, 0.7, 0.7, 0])
+        self.assertTrue(all(not event['memo'] for event in events))
+        with self.assertRaises(ValueError):
+            NeSyFSLanguageModel(MLX_MODEL, "", provider="mlx", policy_temperature=3)
+
+    def test_policy_and_sampling_temperatures_are_configured_independently(self):
+        with patch.dict(os.environ, {"NEO4J_PASSWORD": "test", "NESYFS_POLICY_TEMPERATURE": "0.3",
+                                     "NESYFS_SAMPLE_TEMPERATURE": "0.8"}, clear=True):
+            settings = Settings.from_env(provider="mlx")
+        self.assertEqual((settings.policy_temperature, settings.sample_temperature), (0.3, 0.8))
+        with patch.dict(os.environ, {"NEO4J_PASSWORD": "test", "NESYFS_POLICY_TEMPERATURE": "2.1"}, clear=True):
+            with self.assertRaises(ValueError):
+                Settings.from_env(provider="mlx")
 
     def test_readiness_checks_expected_model_without_inference(self):
         response = MagicMock()

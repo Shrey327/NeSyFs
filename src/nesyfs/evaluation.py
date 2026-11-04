@@ -24,7 +24,12 @@ from nesyfs.llm import NeSyFSLanguageModel
 from nesyfs.planner import TSMCPlanner
 from nesyfs.service import NeSyFSAgent
 
-METHODS = ("reactive", "history", "graph_reflection", "adaptive")
+METHODS = ("reactive", "history", "react", "reflexion", "graph_reflection", "adaptive")
+PROMPT_METHODS = ("reactive", "history", "react", "reflexion")
+REFLEXION_TRIALS = 3
+REACT_HINT = ("\n\nReason before acting: in the rationale, first state what you know about each "
+              "object and container, what is still unknown, and your next sub-goal. Then give "
+              "exactly one action.")
 
 
 def _local_model_provenance(model_path):
@@ -109,23 +114,33 @@ class NoPlanning(Exception):
     """A rejected decision ends without an environment action in this ablation."""
 
 
+class EvaluationCancelled(Exception):
+    """Stop after an in-flight model response, without taking another action."""
+
+
 class RejectPlanner:
     def choose_action(self, task, observation, facts):
         raise NoPlanning()
 
 
 class RecordedEnvironment:
-    def __init__(self, environment, actions):
+    def __init__(self, environment, actions, trial=1, cancel_event=None):
         self.environment = environment
         self.actions = actions
         self.planning_used = False
+        self.trial = trial
+        self.decision = 0
+        self.cancel_event = cancel_event
 
     def execute(self, action):
+        if self.cancel_event and self.cancel_event.is_set():
+            raise EvaluationCancelled()
         previous_invalid = self.environment.invalid_actions
         observation = self.environment.execute(action)
         self.actions.append({"action": action, "observation": observation,
                              "invalid": self.environment.invalid_actions > previous_invalid,
-                             "planning_used": self.planning_used})
+                             "planning_used": self.planning_used, "trial": self.trial,
+                             "decision": self.decision})
         return observation
 
 
@@ -135,7 +150,8 @@ def _after(action, outcome):
     return f"Result of your last action '{action}': {outcome}"
 
 
-def _episode(scenario, method, settings, llm, graph, action_budget, seed):
+def _episode(scenario, method, settings, llm, graph, action_budget, seed,
+             cancel_event=None, on_progress=None):
     env = EvaluationKitchen(scenario)
     session_id = str(uuid4())
     initial = env.observe()
@@ -146,7 +162,42 @@ def _episode(scenario, method, settings, llm, graph, action_budget, seed):
     usage = UsageTracker()
     token = _usage_context.set(usage)
     started = time.monotonic()
-    recorder = RecordedEnvironment(env, actions)
+    recorder = RecordedEnvironment(env, actions, cancel_event=cancel_event)
+    trial = 1
+    old_on_call = getattr(llm, "on_call", None)
+
+    def snapshot():
+        return {"episode_id": session_id, "task_id": scenario.id, "task": scenario.task,
+                "initial_observation": initial, "method": method, "status": "running",
+                "success": bool(env.is_complete), "actions": list(actions), "trace": list(trace[-100:]),
+                "trace_truncated": max(0, len(trace) - 100),
+                "decision_count": decisions, "current_trial": trial,
+                "trial_limit": trials, "trial_budgets": trial_budgets,
+                "invalid_actions": invalid_before + env.invalid_actions,
+                "planner_uses": planner_uses, "rejected_decisions": rejected}
+
+    def publish(persist=False):
+        if on_progress:
+            on_progress(snapshot(), persist)
+
+    def record(stage, message, data=None):
+        event = {"index": len(trace) + 1, "stage": stage, "message": message,
+                 "decision": decisions, "trial": trial}
+        if data is not None:
+            event["data"] = data
+        trace.append(event)
+        publish(persist=(stage == "model"))
+
+    def model_call(data):
+        allowed = ("kind", "prompt", "output", "memo", "sampled", "temperature", "ms", "prompt_tokens",
+                   "cached_tokens", "completion_tokens", "retries")
+        safe = {key: data[key] for key in allowed if key in data}
+        record("model", f"Model {safe.get('kind', 'request')} response completed.", safe)
+        if cancel_event and cancel_event.is_set():
+            raise EvaluationCancelled()
+
+    if hasattr(llm, "on_call"):
+        llm.on_call = model_call
     if method in ("graph_reflection", "adaptive"):
         # Stable per-task seed: matched conditions see identical task instances.
         task_seed = int.from_bytes(sha256(f"{seed}:{scenario.id}".encode()).digest()[:8], "big")
@@ -154,54 +205,99 @@ def _episode(scenario, method, settings, llm, graph, action_budget, seed):
                    TSMCPlanner(llm, settings.particle_count, settings.planning_horizon,
                                rng=random.Random(task_seed)))
         agent = NeSyFSAgent(llm, graph, planner, settings.reflection_limit, settings.reflection_samples)
+    reference = max(1, getattr(scenario, "min_actions", None) or 1)
+    trials = min(REFLEXION_TRIALS, max(1, action_budget // reference)) if method == "reflexion" else 1
+    base, extra = divmod(action_budget, trials)
+    trial_budgets = [base + (1 if n < extra else 0) for n in range(trials)]
+    lessons, invalid_before = [], 0
     try:
-        while decisions < action_budget and not env.is_complete:
-            decisions += 1
-            previous_action = actions[-1]["action"] if actions else None
-            recorder.planning_used = False
-            if method in ("reactive", "history"):
-                context = observation
-                if method == "history" and history:
-                    context += "\n\nPrevious action/observation history:\n" + "\n".join(history)
-                proposal = llm.propose_action(scenario.task, context, [])
-                new_observation = recorder.execute(proposal.action)
-                history.append(f"Action: {proposal.action}\nObservation: {new_observation}")
-                observation = _after(proposal.action, new_observation)
-            else:
-                verdicts = []
-                def emit(stage, message, data=None):
-                    nonlocal planner_uses
-                    if stage == "reflection" and data:
-                        verdicts.append(data)
-                    if stage == "planning" and message.startswith("Reflection rejected"):
-                        if method == "adaptive":
-                            planner_uses += 1
-                            recorder.planning_used = True
-                        else:
-                            return  # The ablation stops here; it does not run the planner.
-                    trace.append({"stage": stage, "message": message})
-                try:
-                    result = agent.step(session_id, scenario.task, observation, recorder,
-                                        previous_action=previous_action, trace=emit)
-                    observation = _after(result.action, result.observation)
-                except NoPlanning:
-                    rejected += 1
-                    trace.append({"stage": "rejection", "message": "Rejected decision; no action was executed."})
-                    # Nothing changed in the environment, so without this the next decision
-                    # gets the identical prompt and greedy decoding repeats the same rejection.
-                    if verdicts:
-                        last = verdicts[-1]
-                        notes = "; ".join(v["feedback"] for v in last["votes"] if not v["aligned"] and v["feedback"])
-                        observation = (f"{observation}\nYour proposal '{last['action']}' was rejected "
-                                       f"and not executed: {notes or 'no reason given'}")
-            # One rejected decision consumes a turn; this prevents unbounded retries.
-        status = "completed" if env.is_complete else "budget_exhausted"
+        for next_trial in range(1, trials + 1):
+            if decisions >= action_budget or (cancel_event and cancel_event.is_set()):
+                break
+            trial = next_trial
+            if trial > 1:
+                # Reflexion: learn from the failed attempt, then retry from a fresh kitchen.
+                lessons.append(llm.lesson(scenario.task, "\n".join(history)).lesson)
+                record("lesson", f"Attempt {trial - 1} lesson: {lessons[-1]}")
+                invalid_before += env.invalid_actions
+                env = EvaluationKitchen(scenario)
+                recorder = RecordedEnvironment(env, actions, trial, cancel_event)
+                observation = env.observe()
+                history = [f"Initial observation: {observation}"]
+            trial_decisions = 0
+            while trial_decisions < trial_budgets[trial - 1] and decisions < action_budget and not env.is_complete:
+                if cancel_event and cancel_event.is_set():
+                    break
+                trial_decisions += 1
+                decisions += 1
+                recorder.decision = decisions
+                record("observation", observation, {"observation": observation})
+                record("decision", "Decision started; awaiting model response.")
+                publish(persist=True)
+                previous_action = actions[-1]["action"] if actions else None
+                recorder.planning_used = False
+                if method in PROMPT_METHODS:
+                    context = observation
+                    if method != "reactive" and history:
+                        context += "\n\nPrevious action/observation history:\n" + "\n".join(history)
+                    if lessons:
+                        context = ("Lessons from your earlier failed attempts:\n- " + "\n- ".join(lessons)
+                                   + "\n\n" + context)
+                    if method == "react":
+                        context += REACT_HINT
+                    proposal = llm.propose_action(scenario.task, context, [])
+                    record("proposal", f"Proposed: {proposal.action}",
+                           {"action": proposal.action, "rationale": proposal.rationale})
+                    new_observation = recorder.execute(proposal.action)
+                    record("action", f"Executed: {proposal.action}", actions[-1])
+                    record("observation", new_observation, {"observation": new_observation})
+                    thought = f"Thought: {proposal.rationale}\n" if method == "react" and proposal.rationale else ""
+                    history.append(f"{thought}Action: {proposal.action}\nObservation: {new_observation}")
+                    observation = _after(proposal.action, new_observation)
+                else:
+                    verdicts = []
+                    def emit(stage, message, data=None):
+                        nonlocal planner_uses
+                        if stage == "reflection" and data:
+                            verdicts.append(data)
+                        if stage == "planning" and message.startswith("Reflection rejected"):
+                            if method == "adaptive":
+                                planner_uses += 1
+                                recorder.planning_used = True
+                            else:
+                                return  # The ablation stops here; it does not run the planner.
+                        record(stage, message, data)
+                    try:
+                        result = agent.step(session_id, scenario.task, observation, recorder,
+                                            previous_action=previous_action, trace=emit)
+                        observation = _after(result.action, result.observation)
+                    except NoPlanning:
+                        rejected += 1
+                        record("rejection", "Rejected decision; no action was executed.")
+                        # Nothing changed in the environment, so without this the next decision
+                        # gets the identical prompt and greedy decoding repeats the same rejection.
+                        if verdicts:
+                            last = verdicts[-1]
+                            notes = "; ".join(v["feedback"] for v in last["votes"] if not v["aligned"] and v["feedback"])
+                            observation = (f"{observation}\nYour proposal '{last['action']}' was rejected "
+                                           f"and not executed: {notes or 'no reason given'}")
+                # One rejected decision consumes a turn; this prevents unbounded retries.
+                publish(persist=True)
+            if env.is_complete:
+                break
+        status = ("completed" if env.is_complete else
+                  "cancelled" if cancel_event and cancel_event.is_set() else "budget_exhausted")
+    except EvaluationCancelled:
+        status = "cancelled"
     except Exception as exc:
         # Error text may contain credentials or request details; retain type only.
         error = type(exc).__name__
         status = "error"
+        record("error", f"Episode stopped by {error} during decision {decisions}.")
     finally:
         elapsed = time.monotonic() - started
+        if hasattr(llm, "on_call"):
+            llm.on_call = old_on_call
         _usage_context.reset(token)
     return {"episode_id": session_id, "task_id": scenario.id, "task": scenario.task,
             "scenario": {"label": getattr(scenario, "label", scenario.id),
@@ -210,7 +306,10 @@ def _episode(scenario, method, settings, llm, graph, action_budget, seed):
                          "min_actions": getattr(scenario, "min_actions", None)},
             "initial_observation": initial, "method": method,
             "success": bool(env.is_complete), "status": status, "error": error,
-            "actions": actions, "decision_count": decisions, "invalid_actions": env.invalid_actions,
+            "actions": actions, "decision_count": decisions,
+            "invalid_actions": invalid_before + env.invalid_actions, "trials": trial,
+            "trial_limit": trials, "trial_budgets": trial_budgets,
+            "lessons": lessons,
             "rejected_decisions": rejected, "planner_uses": planner_uses,
             "elapsed_seconds": round(elapsed, 3), "tokens": usage.measured(), "cost": None,
             "usage_coverage": {"calls_started": len(usage.started), "calls_reported": len(usage.reported),
@@ -234,7 +333,8 @@ def _write(run, path):
 
 
 def run_comparison(settings, task_ids, methods, action_budget, output_path, seed=42,
-                   on_episode=None, repeats=1, on_start=None):
+                   on_episode=None, repeats=1, on_start=None, stop_on_error=False,
+                   cancel_event=None, on_progress=None):
     """Run each requested method on each task, persisting real results as they finish.
 
     All conditions share task text, model and decision limit. A reflected rejection
@@ -260,7 +360,11 @@ def run_comparison(settings, task_ids, methods, action_budget, output_path, seed
            "created_at": datetime.now(timezone.utc).isoformat(), "status": "running",
            "model": settings.model, "provider": getattr(settings, "provider", "openai"),
            "action_budget": action_budget, "seed": seed, "repeats": repeats,
-           "model_temperature": 0, "python_version": sys.version.split()[0],
+           "model_temperature": 0, "policy_temperature": getattr(settings, "policy_temperature", 0.0),
+           "sample_temperature": getattr(settings, "sample_temperature", 0.0), "cache_enabled": False,
+           "reflexion_budget_policy": "shared decision budget divided across up to three attempts; "
+                                       "trial count uses the public feasible reference length",
+           "reflexion_trials": REFLEXION_TRIALS, "python_version": sys.version.split()[0],
            "source_sha256": source_digests,
            "settings": {key: getattr(settings, key) for key in
                         ("reflection_limit", "reflection_samples", "particle_count", "planning_horizon")},
@@ -272,7 +376,10 @@ def run_comparison(settings, task_ids, methods, action_budget, output_path, seed
     try:
         provider = getattr(settings, "provider", "openai")
         api_key = settings.openai_api_key if provider == "openai" else ""
-        llm = NeSyFSLanguageModel(settings.model, api_key, provider=provider)
+        llm = NeSyFSLanguageModel(settings.model, api_key, provider=provider,
+                                  sample_temperature=getattr(settings, "sample_temperature", 0.0),
+                                  policy_temperature=getattr(settings, "policy_temperature", 0.0),
+                                  cache_enabled=False)
         if any(m in ("graph_reflection", "adaptive") for m in methods):
             graph = Neo4jKnowledgeGraph(settings.neo4j_uri, settings.neo4j_username,
                                          settings.neo4j_password, settings.retrieval_limit)
@@ -285,20 +392,48 @@ def run_comparison(settings, task_ids, methods, action_budget, output_path, seed
                 rotation = (index + repeat - 1) % len(methods)
                 methods_order = list(methods[rotation:]) + list(methods[:rotation])
                 for method in methods_order:
+                    if cancel_event and cancel_event.is_set():
+                        run["status"] = "cancelled"
+                        run["error"] = "Cancelled; remaining episodes were not run."
+                        return run
                     if on_start:
                         on_start(task_id, method, repeat)
-                    episode = _episode(available[task_id], method, settings, llm, graph, action_budget, seed + repeat - 1)
+                    def progress(snapshot, persist):
+                        snapshot["repeat"] = repeat
+                        snapshot["run_order"] = len(run["episodes"]) + 1
+                        run["active_episode"] = snapshot
+                        if persist:
+                            _write(run, output_path)
+                        if on_progress:
+                            on_progress(snapshot)
+                    episode = _episode(available[task_id], method, settings, llm, graph, action_budget,
+                                       seed + repeat - 1, cancel_event=cancel_event, on_progress=progress)
                     episode["repeat"] = repeat
                     episode["run_order"] = len(run["episodes"]) + 1
+                    run.pop("active_episode", None)
                     run["episodes"].append(episode)
                     _write(run, output_path)
                     if on_episode:
                         on_episode(run)
-                    if episode["status"] == "error":
-                        run["status"] = "error"
-                        run["error"] = "Evaluation stopped after an episode error; remaining comparisons were not run."
+                    if episode["status"] == "cancelled" or (cancel_event and cancel_event.is_set()):
+                        run["status"] = "cancelled"
+                        run["error"] = "Cancelled; remaining episodes were not run."
                         return run
-        run["status"] = "completed"
+                    fatal = episode["error"] in {"AuthenticationError", "PermissionDeniedError",
+                                                  "RateLimitError", "APIConnectionError", "APITimeoutError",
+                                                  "ServiceUnavailable", "AuthError"}
+                    if episode["status"] == "error" and (stop_on_error or fatal):
+                        run["status"] = "error"
+                        run["error"] = ("Evaluation stopped after a service or configuration error; "
+                                        "remaining comparisons were not run." if fatal else
+                                        "Evaluation stopped after an episode error; remaining comparisons were not run.")
+                        return run
+        run["status"] = ("completed_with_errors" if any(e["status"] == "error" for e in run["episodes"])
+                         else "completed")
+        return run
+    except KeyboardInterrupt:
+        run["status"] = "cancelled"
+        run["error"] = "Interrupted; remaining episodes were not run."
         return run
     except Exception as exc:
         run["status"] = "error"

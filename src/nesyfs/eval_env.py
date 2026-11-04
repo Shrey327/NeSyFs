@@ -21,6 +21,8 @@ class Scenario:
     clean_goals: tuple[str, ...] = ()
     closed_goals: tuple[str, ...] = ()
     tap_off_goal: bool = False
+    # Partial observability: contents of a closed container stay unseen until opened.
+    hidden: bool = False
 
     @property
     def task(self) -> str:
@@ -48,7 +50,9 @@ class Scenario:
             "A container must be open to take an object from it or put an object in it. "
             "Only one object can be held at once. Washing requires holding the object and the tap on. "
             "Turning the tap on or off and opening or closing a container do not require free hands. "
-            "Later observations report only the action outcome."
+            + ("Objects inside a closed fridge or cupboard cannot be seen until you open it. "
+               if self.hidden else "")
+            + "Later observations report only the action outcome."
         )
 
 
@@ -69,6 +73,18 @@ SCENARIOS = (
     Scenario("wash_mug_secure", "mug", "fridge", (("mug", "cupboard"), ("key", "counter"), ("apple", "table")), ("fridge",),
              label="Unlock, wash and reset", description="Unlock the cupboard, wash the mug, store it, and restore the cupboard and tap.", difficulty="complex", min_actions=10,
              locked_containers=("cupboard",), clean_goals=("mug",), closed_goals=("cupboard",), tap_off_goal=True),
+    # Partial-observability suite. Designed before any model was run on it: every
+    # configuration must search closed containers and remember what it found.
+    Scenario("hidden_apple_search", "apple", "fridge", (("apple", "cupboard"), ("pear", "fridge"), ("mug", "counter")), (),
+             label="Search for the apple", description="Find the hidden apple, store it in the fridge, and close both containers.",
+             difficulty="hidden", min_actions=6, closed_goals=("fridge", "cupboard"), hidden=True),
+    Scenario("hidden_key_search", "apple", "cupboard", (("apple", "table"), ("key", "fridge"), ("pear", "cupboard")), (),
+             label="Find the key", description="The cupboard is locked and the key is hidden. Store the apple and close everything.",
+             difficulty="hidden", min_actions=9, locked_containers=("cupboard",), closed_goals=("fridge", "cupboard"), hidden=True),
+    Scenario("hidden_swap_wash", "mug", "cupboard", (("mug", "fridge"), ("pear", "cupboard"), ("apple", "counter")), (),
+             label="Hidden swap and wash", description="Swap two hidden objects between containers, wash one, and restore the kitchen.",
+             difficulty="hidden", min_actions=11, additional_goals=(("pear", "fridge"),), clean_goals=("mug",),
+             closed_goals=("fridge", "cupboard"), tap_off_goal=True, hidden=True),
 )
 
 
@@ -85,16 +101,20 @@ class EvaluationKitchen:
         self._clean: set[str] = set()
         self._held: str | None = None
         self.invalid_actions = 0
+        visible = [(obj, location) for obj, location in scenario.objects
+                   if not (scenario.hidden and location in self._open and not self._open[location])]
         self._observation = (
             "Initial kitchen: "
             + "; ".join(f"the {obj} is in the {location}" if location in self._open
                         else f"the {obj} is on the {location}"
-                        for obj, location in scenario.objects)
+                        for obj, location in visible)
+            + "".join(f"; you cannot see inside the closed {container}"
+                      for container, opened in self._open.items() if scenario.hidden and not opened)
             + "; " + "; ".join(f"the {container} is {'open' if opened else 'closed'}"
                                   for container, opened in self._open.items())
             + ("; " + "; ".join(f"the {container} is {'locked' if locked else 'unlocked'}"
                                   for container, locked in self._locked.items())
-               + "; the tap is off; all objects are unwashed" if scenario.difficulty == "complex" else "")
+               + "; the tap is off; all objects are unwashed" if scenario.difficulty != "basic" else "")
             + "; your hands are empty."
         )
 
@@ -119,6 +139,8 @@ class EvaluationKitchen:
             return self._invalid("Invalid action: use the listed commands.")
         command = re.sub(r"[.!?]+$", "", action.strip().casefold())
         command = re.sub(r"\bthe\s+", "", command)
+        # Models sometimes wrap a concrete command argument in the example's brackets.
+        command = re.sub(r"<([a-z]+)>", r"\1", command)
         command = re.sub(r"\s+", " ", command)
 
         match = re.fullmatch(r"open (fridge|cupboard)", command)
@@ -130,10 +152,13 @@ class EvaluationKitchen:
                 return self._invalid(f"The {container} is locked; nothing changed.")
             self._open[container] = True
             self._observation = f"You opened the {container}."
+            if self.scenario.hidden:
+                inside = [f"the {obj}" for obj, place in self._objects.items() if place == container]
+                self._observation += f" Inside: {', '.join(inside) if inside else 'nothing'}."
             return self._observation
 
         match = re.fullmatch(r"close (fridge|cupboard)", command)
-        if match and self.scenario.difficulty == "complex":
+        if match and self.scenario.difficulty != "basic":
             container = match.group(1)
             if not self._open[container]:
                 return self._invalid(f"The {container} is already closed; nothing changed.")
@@ -142,7 +167,7 @@ class EvaluationKitchen:
             return self._observation
 
         match = re.fullmatch(r"unlock (fridge|cupboard) with key", command)
-        if match and self.scenario.difficulty == "complex":
+        if match and self.scenario.difficulty != "basic":
             container = match.group(1)
             if not self._locked[container]:
                 return self._invalid(f"The {container} is already unlocked; nothing changed.")
@@ -153,7 +178,7 @@ class EvaluationKitchen:
             return self._observation
 
         match = re.fullmatch(r"turn (on|off) tap", command)
-        if match and self.scenario.difficulty == "complex":
+        if match and self.scenario.difficulty != "basic":
             desired = match.group(1) == "on"
             if self._tap_on == desired:
                 return self._invalid(f"The tap is already {match.group(1)}; nothing changed.")
@@ -162,7 +187,7 @@ class EvaluationKitchen:
             return self._observation
 
         match = re.fullmatch(r"wash ([a-z]+)", command)
-        if match and self.scenario.difficulty == "complex":
+        if match and self.scenario.difficulty != "basic":
             obj = match.group(1)
             if self._held != obj:
                 return self._invalid(f"You must hold the {obj} to wash it.")
@@ -177,6 +202,18 @@ class EvaluationKitchen:
         match = re.fullmatch(r"(?:take|pick up|grab) ([a-z]+)(?: from (fridge|cupboard|table|counter))?", command)
         if match:
             obj = match.group(1)
+            if self.scenario.hidden:
+                # Check visible conditions before looking up an object's hidden location.
+                if self._held is not None:
+                    return self._invalid("Your hands are already full; nothing changed.")
+                source = match.group(2)
+                if source in self._open and not self._open[source]:
+                    return self._invalid(f"The {source} is closed; nothing changed.")
+                location = self._objects.get(obj)
+                if source is not None and source != location:
+                    return self._invalid(f"The {obj} is not in or on the {source}; nothing changed.")
+                if location is None or (location in self._open and not self._open[location]):
+                    return self._invalid(f"You cannot see the {obj} anywhere you can reach; nothing changed.")
             if obj not in self._objects:
                 return self._invalid(f"There is no {obj} in this kitchen.")
             if self._held is not None:
@@ -204,7 +241,7 @@ class EvaluationKitchen:
             return self._observation
 
         match = re.fullmatch(r"(?:put|place|set) ([a-z]+) (?:on|onto) (table|counter)", command)
-        if match and self.scenario.difficulty == "complex":
+        if match and self.scenario.difficulty != "basic":
             obj, surface = match.groups()
             if self._held != obj:
                 return self._invalid(f"You are not holding the {obj}; nothing changed.")

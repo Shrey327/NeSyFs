@@ -51,6 +51,8 @@ class Settings:
     planning_horizon: int = 5
     retrieval_limit: int = 100
     provider: str = "openai"
+    sample_temperature: float = 0.0
+    policy_temperature: float = 0.0
 
     @classmethod
     def from_env(cls, provider: str = "openai") -> "Settings":
@@ -74,8 +76,14 @@ class Settings:
             planning_horizon=int(os.getenv("NESYFS_PLANNING_HORIZON", "5")),
             retrieval_limit=int(os.getenv("NESYFS_RETRIEVAL_LIMIT", "100")),
             provider=provider,
+            sample_temperature=float(os.getenv("NESYFS_SAMPLE_TEMPERATURE", "0")),
+            policy_temperature=float(os.getenv("NESYFS_POLICY_TEMPERATURE", "0")),
         )
         if min(settings.reflection_limit, settings.reflection_samples, settings.particle_count,
                settings.planning_horizon, settings.retrieval_limit) < 1:
             raise ValueError("NeSyFS limits must all be positive integers")
+        if not 0 <= settings.sample_temperature <= 2:
+            raise ValueError("NESYFS_SAMPLE_TEMPERATURE must be between 0 and 2")
+        if not 0 <= settings.policy_temperature <= 2:
+            raise ValueError("NESYFS_POLICY_TEMPERATURE must be between 0 and 2")
         return settings

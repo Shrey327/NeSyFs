@@ -1,4 +1,6 @@
 import json
+import threading
+from dataclasses import replace
 from hashlib import sha256
 import tempfile
 import unittest
@@ -9,7 +11,7 @@ from uuid import uuid4
 
 from nesyfs import evaluation
 from nesyfs.eval_env import SCENARIOS
-from nesyfs.models import ActionProposal, EntityNames, MemoryDelta, Prediction, Reflection
+from nesyfs.models import ActionProposal, EntityNames, Lesson, MemoryDelta, Prediction, Reflection
 
 SETTINGS = SimpleNamespace(model='fake-model', openai_api_key='secret', neo4j_uri='',
     neo4j_username='', neo4j_password='password', retrieval_limit=100,
@@ -35,7 +37,7 @@ class FakeModel:
         self.memory_calls += 1
         if self.fail_after_action and self.memory_calls == 2: raise RuntimeError('secret')
         return MemoryDelta()
-    def propose_action(self, task, observation, facts, feedback=''):
+    def propose_action(self, task, observation, facts, feedback='', sampled=False):
         self.contexts.append(observation)
         if 'holding' in observation.lower(): action = 'put apple in fridge'
         elif 'opened the fridge' in observation.lower(): action = 'take apple'
@@ -44,6 +46,7 @@ class FakeModel:
         return ActionProposal(action=action)
     def reflect(self, task, observation, action, facts): return Reflection(aligned=self.aligned, feedback='no')
     def predict(self, task, observation, action, facts): return Prediction(observation='predicted', progress=True)
+    def lesson(self, task, transcript): return Lesson(lesson='open the fridge first')
 
 
 class EvaluationTests(unittest.TestCase):
@@ -60,6 +63,58 @@ class EvaluationTests(unittest.TestCase):
         self.assertNotIn('Initial observation:', reactive.contexts[1])
         self.assertTrue(reactive.contexts[1].startswith("Result of your last action 'open fridge':"))
         self.assertIn('Initial observation:', history.contexts[1])
+
+    def test_react_sees_its_previous_thoughts(self):
+        class Thinker(FakeModel):
+            def propose_action(self, task, observation, facts, feedback='', sampled=False):
+                proposal = super().propose_action(task, observation, facts, feedback)
+                return ActionProposal(action=proposal.action, rationale='fridge is closed')
+        model = Thinker()
+        result = evaluation._episode(SCENARIOS[0], 'react', SETTINGS, model, None, 3, 42)
+        self.assertTrue(result['success'])
+        self.assertIn('Reason before acting', model.contexts[0])
+        self.assertIn('Thought: fridge is closed', model.contexts[1])
+
+    def test_reflexion_retries_fresh_with_lessons(self):
+        class Learner(FakeModel):
+            def propose_action(self, task, observation, facts, feedback='', sampled=False):
+                self.contexts.append(observation)
+                if 'Lessons' not in observation: return ActionProposal(action='dance')
+                return super().propose_action(task, observation.split('\n\n', 1)[1], facts, feedback)
+        model = Learner()
+        result = evaluation._episode(SCENARIOS[0], 'reflexion', SETTINGS, model, None, 9, 42)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['trials'], 2)
+        self.assertEqual(result['lessons'], ['open the fridge first'])
+        self.assertEqual(result['invalid_actions'], 3)
+        self.assertEqual([a['trial'] for a in result['actions']], [1, 1, 1, 2, 2, 2])
+        self.assertLessEqual(result['decision_count'], 9)
+        self.assertIn('open the fridge first', model.contexts[3])
+
+    def test_reflexion_allocates_trials_to_fit_public_reference(self):
+        class Invalid(FakeModel):
+            def propose_action(self, *args, **kwargs):
+                return ActionProposal(action='dance')
+        for budget, reference, expected in [(20, 11, [20]), (20, 6, [7, 7, 6]), (2, 3, [2])]:
+            with self.subTest(budget=budget, reference=reference):
+                scenario = replace(SCENARIOS[0], min_actions=reference)
+                result = evaluation._episode(scenario, 'reflexion', SETTINGS, Invalid(), None, budget, 42)
+                self.assertEqual(result['trial_limit'], len(expected))
+                self.assertEqual(result['trial_budgets'], expected)
+                self.assertEqual(result['decision_count'], budget)
+                self.assertEqual(len(result['actions']), budget)
+
+    def test_cancellation_between_proposal_and_action_does_not_mutate_environment(self):
+        cancelled = threading.Event()
+        class Cancels(FakeModel):
+            def propose_action(self, *args, **kwargs):
+                cancelled.set()
+                return ActionProposal(action='open fridge')
+        result = evaluation._episode(SCENARIOS[0], 'reactive', SETTINGS, Cancels(), None, 3, 42,
+                                     cancel_event=cancelled)
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(result['actions'], [])
+        self.assertFalse(result['success'])
 
     def test_rejected_ablation_consumes_budget_without_action_or_planning(self):
         result = evaluation._episode(SCENARIOS[0], 'graph_reflection', SETTINGS,
@@ -142,9 +197,161 @@ class EvaluationTests(unittest.TestCase):
                 settings = SimpleNamespace(**vars(SETTINGS), provider=provider)
                 run = evaluation.run_comparison(settings, [SCENARIOS[0].id], ['reactive'], 3,
                                                 Path(directory) / 'run.json')
-                model.assert_called_once_with(settings.model, '', provider=provider)
+                model.assert_called_once_with(settings.model, '', provider=provider, sample_temperature=0.0,
+                                              policy_temperature=0.0, cache_enabled=False)
                 self.assertEqual(run['provider'], provider)
                 self.assertIn('local_model_provenance', run)
+
+    def test_six_methods_have_fresh_episodes_and_shared_budget(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(evaluation, 'NeSyFSLanguageModel', FakeModel), \
+             patch.object(evaluation, 'Neo4jKnowledgeGraph', FakeGraph):
+            path = Path(directory) / 'run.json'
+            run = evaluation.run_comparison(SETTINGS, [SCENARIOS[0].id], list(evaluation.METHODS), 6, path)
+            self.assertEqual(run['status'], 'completed')
+            self.assertEqual(len(run['episodes']), 6)
+            self.assertEqual(len({e['episode_id'] for e in run['episodes']}), 6)
+            self.assertTrue(all(e['decision_count'] <= 6 for e in run['episodes']))
+            self.assertFalse(run['cache_enabled'])
+            self.assertEqual(json.loads(path.read_text())['status'], 'completed')
+
+    def test_recoverable_episode_error_does_not_skip_remaining_methods(self):
+        def episode(scenario, method, *args, **kwargs):
+            return {'status': 'error' if method == 'react' else 'completed',
+                    'error': 'ValidationError' if method == 'react' else None}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(evaluation, 'NeSyFSLanguageModel', FakeModel), \
+             patch.object(evaluation, 'Neo4jKnowledgeGraph', FakeGraph), \
+             patch.object(evaluation, '_episode', side_effect=episode):
+            path = Path(directory) / 'run.json'
+            run = evaluation.run_comparison(SETTINGS, [SCENARIOS[0].id], list(evaluation.METHODS), 1, path)
+            self.assertEqual(run['status'], 'completed_with_errors')
+            self.assertEqual(len(run['episodes']), 6)
+
+    def test_fatal_service_error_stops_before_more_calls(self):
+        def episode(*args, **kwargs):
+            return {'status': 'error', 'error': 'AuthenticationError'}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(evaluation, 'NeSyFSLanguageModel', FakeModel), \
+             patch.object(evaluation, 'Neo4jKnowledgeGraph', FakeGraph), \
+             patch.object(evaluation, '_episode', side_effect=episode):
+            path = Path(directory) / 'run.json'
+            run = evaluation.run_comparison(SETTINGS, [SCENARIOS[0].id], list(evaluation.METHODS), 1, path)
+            self.assertEqual(run['status'], 'error')
+            self.assertEqual(len(run['episodes']), 1)
+
+    def test_cancellation_keeps_actual_decision_and_partial_progress(self):
+        cancelled = threading.Event()
+        snapshots = []
+        def progress(snapshot):
+            snapshots.append(snapshot)
+            cancelled.set()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(evaluation, 'NeSyFSLanguageModel', FakeModel):
+            path = Path(directory) / 'run.json'
+            run = evaluation.run_comparison(SETTINGS, [SCENARIOS[0].id], ['reactive', 'history'], 6,
+                                            path, cancel_event=cancelled, on_progress=progress)
+            self.assertEqual(run['status'], 'cancelled')
+            self.assertEqual(len(run['episodes']), 1)
+            self.assertEqual(run['episodes'][0]['status'], 'cancelled')
+            self.assertEqual(run['episodes'][0]['decision_count'], 1)
+            self.assertTrue(snapshots)
+            self.assertEqual(json.loads(path.read_text())['status'], 'cancelled')
+
+    def test_live_model_events_are_validated_and_raw_is_never_saved(self):
+        class Observable(FakeModel):
+            def __init__(self):
+                super().__init__()
+                self.on_call = None
+            def propose_action(self, *args, **kwargs):
+                proposal = super().propose_action(*args, **kwargs)
+                if self.on_call:
+                    self.on_call({'kind': 'propose', 'prompt': 'task', 'output': proposal.model_dump(),
+                                  'raw': 'sensitive hidden content', 'ms': 2})
+                return proposal
+        snapshots = []
+        result = evaluation._episode(SCENARIOS[0], 'reactive', SETTINGS, Observable(), None, 3, 42,
+                                     on_progress=lambda snapshot, persist: snapshots.append((snapshot, persist)))
+        calls = [e for e in result['trace'] if e['stage'] == 'model']
+        self.assertEqual(len(calls), 3)
+        self.assertNotIn('raw', calls[0]['data'])
+        self.assertIn('output', calls[0]['data'])
+        self.assertEqual([e['index'] for e in result['trace']], list(range(1, len(result['trace']) + 1)))
+        self.assertTrue(any(persist for _, persist in snapshots))
+
+    def test_cancel_after_final_action_preserves_goal_and_reports_cancelled(self):
+        cancelled = threading.Event()
+        class Observable(FakeModel):
+            def __init__(self):
+                super().__init__()
+                self.on_call = None
+            def extract_memory(self, action, observation, facts):
+                result = super().extract_memory(action, observation, facts)
+                if self.memory_calls == 6 and self.on_call:
+                    self.on_call({'kind': 'memory', 'output': {'phase': 'final-outcome'}})
+                return result
+        def progress(snapshot, persist):
+            data = snapshot['trace'][-1].get('data') or {}
+            if isinstance(data.get('output'), dict) and data['output'].get('phase') == 'final-outcome':
+                cancelled.set()
+        result = evaluation._episode(SCENARIOS[0], 'graph_reflection', SETTINGS,
+                                     Observable(), FakeGraph(), 3, 42,
+                                     cancel_event=cancelled, on_progress=progress)
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertTrue(result['success'])
+        self.assertIsNone(result['error'])
+        self.assertEqual(result['actions'][-1]['action'], 'put apple in fridge')
+        self.assertEqual(result['decision_count'], 3)
+
+    def test_live_model_output_is_checkpointed_before_episode_finishes(self):
+        class Observable(FakeModel):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.on_call = None
+            def propose_action(self, *args, **kwargs):
+                proposal = super().propose_action(*args, **kwargs)
+                if self.on_call:
+                    self.on_call({'kind': 'propose', 'prompt': 'synthetic task',
+                                  'output': proposal.model_dump(), 'raw': 'do-not-save'})
+                return proposal
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(evaluation, 'NeSyFSLanguageModel', Observable):
+            path = Path(directory) / 'run.json'
+            saved = []
+            def progress(snapshot):
+                if snapshot['trace'][-1]['stage'] == 'model':
+                    saved.append(json.loads(path.read_text()))
+            run = evaluation.run_comparison(SETTINGS, [SCENARIOS[0].id], ['reactive'], 3,
+                                            path, on_progress=progress)
+            self.assertTrue(saved)
+            self.assertEqual(saved[0]['status'], 'running')
+            self.assertEqual(saved[0]['active_episode']['trace'][-1]['stage'], 'model')
+            self.assertIn('output', saved[0]['active_episode']['trace'][-1]['data'])
+            self.assertNotIn('do-not-save', json.dumps(saved[0]))
+            self.assertEqual(run['status'], 'completed')
+            self.assertNotIn('active_episode', json.loads(path.read_text()))
+
+    def test_cancel_before_start_does_not_create_fake_episodes(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(evaluation, 'NeSyFSLanguageModel', FakeModel):
+            path = Path(directory) / 'run.json'
+            run = evaluation.run_comparison(SETTINGS, [SCENARIOS[0].id], ['reactive'], 3,
+                                            path, cancel_event=cancelled)
+            self.assertEqual(run['status'], 'cancelled')
+            self.assertEqual(run['episodes'], [])
+            self.assertEqual(json.loads(path.read_text())['status'], 'cancelled')
+
+    def test_keyboard_interrupt_marks_run_cancelled(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(evaluation, 'NeSyFSLanguageModel', FakeModel), \
+             patch.object(evaluation, '_episode', side_effect=KeyboardInterrupt):
+            path = Path(directory) / 'run.json'
+            run = evaluation.run_comparison(SETTINGS, [SCENARIOS[0].id], ['reactive'], 1, path)
+            self.assertEqual(run['status'], 'cancelled')
+            self.assertEqual(run['episodes'], [])
+            self.assertEqual(json.loads(path.read_text())['status'], 'cancelled')
 
     def test_local_provenance_records_small_configs_without_weights(self):
         with tempfile.TemporaryDirectory() as directory:

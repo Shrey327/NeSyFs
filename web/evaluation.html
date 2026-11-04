@@ -23,15 +23,17 @@
         <div>
           <span class="hero-kicker">Comparison lab</span>
           <h1 class="hero-title">Compare the loops.</h1>
-          <p class="hero-copy">Four agent configurations on the same kitchen tasks, model and decision budget. Local measurements from a small simulator, not the paper's benchmark scores.</p>
+          <p class="hero-copy">Six configurations on matched kitchen tasks. Inspect their actions, observations and recorded model outputs. These local measurements are not the paper's benchmark scores.</p>
         </div>
         <p class="hero-fine">No claim of statistical significance.</p>
       </div>
       <ol class="method-list" aria-label="Configurations compared">
         <li><span>01</span><div><h4>Reactive</h4><p>Last action and its result.</p></div></li>
         <li><span>02</span><div><h4>History</h4><p>Adds every prior action and observation.</p></div></li>
-        <li><span>03</span><div><h4>Graph + reflection</h4><p>Retrieved facts, and votes check each proposal.</p></div></li>
-        <li><span>04</span><div><h4>Full adaptive</h4><p>Falls back to particle planning after rejections.</p></div></li>
+        <li><span>03</span><div><h4>ReAct-style</h4><p>Action history plus model-supplied rationale.</p></div></li>
+        <li><span>04</span><div><h4>Reflexion-style</h4><p>Can use feedback from previous attempts.</p></div></li>
+        <li><span>05</span><div><h4>Graph + reflection</h4><p>Retrieved facts and votes check proposals.</p></div></li>
+        <li><span>06</span><div><h4>Full adaptive</h4><p>Can fall back to particle planning.</p></div></li>
       </ol>
     </section>
 
@@ -49,7 +51,7 @@
           <div class="field-row"><label for="repeats">Repeats <span>per task and config</span></label><input id="repeats" type="number" min="1" max="3" value="1" required></div>
         </div>
         <p id="setup-details" class="fine-print">A rejected decision consumes one opportunity. Model and settings are recorded with every run.</p>
-        <button class="primary" id="run-button" type="submit" disabled><span>Run comparison</span></button>
+        <div class="run-actions"><button class="primary" id="run-button" type="submit" disabled><span>Run comparison</span></button><button class="chip cancel-run" id="cancel-button" type="button" hidden>Stop comparison</button></div>
         <p id="run-message" class="lab-notice" role="status" aria-live="polite" hidden></p>
         <div id="progress" class="progress" aria-live="polite" hidden><div class="progress-head"><span id="progress-label">Preparing experiment…</span><span id="progress-count"></span></div><div class="progress-track"><span id="progress-fill"></span></div><p id="progress-current"></p></div>
       </form>
@@ -57,10 +59,17 @@
       <article class="panel rules">
         <div class="panel-head"><h2>How the tasks work</h2></div>
         <p>Every configuration gets the same starting layout and command rules. After that, observations report only what the last action did, so an agent has to keep track of state itself.</p>
-        <p>Each new observation names the action it came from. Without that, greedy decoding sees the same input after a failed action and repeats it.</p>
+        <p>The last action and its outcome are shown to the reactive policy. The other configurations may receive additional history, model feedback, or graph facts.</p>
         <p>Complex goals can need a key, washing, several objects, and closing a door or the tap. Success is checked against the simulator's real goal state.</p>
         <p class="fine-print">Reference step counts are one feasible solution, not a proven minimum. Planning only runs after reflection rejects proposals, so it may never run.</p>
       </article>
+    </section>
+
+    <section class="panel live-panel" id="live-panel" aria-label="Live comparison activity" hidden>
+      <div class="live-header"><div><span class="detail-label">LIVE COMPARISON</span><h2>What the agent is doing</h2><p>Each decision reads: what it sees → what it proposes → the check → what it does → the result. Updates after each model response.</p></div><span class="live-indicator">● LIVE</span></div>
+      <div id="live-context" class="live-context"></div>
+      <p class="live-note">The action list covers the whole episode. Decision cards cover the latest 80 events; older decisions may be trimmed.</p>
+      <div id="live-events" class="live-events" role="log" aria-live="polite" aria-label="Latest agent events"></div>
     </section>
 
     <section class="panel results-panel" aria-label="Experiment results">
@@ -71,9 +80,10 @@
       <div id="results-empty" class="results-empty"><strong>No measurements yet.</strong><p>Run a comparison to fill this table with recorded episodes.</p></div>
       <div id="result-content" hidden>
         <div id="run-meta" class="run-meta"></div>
-        <div class="table-scroll"><table><caption>Results grouped by agent configuration</caption><thead><tr><th scope="col">Configuration</th><th scope="col">Success / evaluable</th><th scope="col">Errors</th><th scope="col">Actions</th><th scope="col">Invalid</th><th scope="col">Planner uses</th><th scope="col">Elapsed</th><th scope="col">Tokens</th></tr></thead><tbody id="results-body"></tbody></table></div>
+        <div id="score-bars" class="score-bars" aria-label="Success rate by configuration"></div>
+        <div class="table-scroll"><table><caption>Results grouped by agent configuration</caption><thead><tr><th scope="col">Configuration</th><th scope="col">Success / evaluable</th><th scope="col">Errors / incomplete</th><th scope="col">Actions</th><th scope="col">Invalid</th><th scope="col">Planner uses</th><th scope="col">Elapsed</th><th scope="col">Tokens</th></tr></thead><tbody id="results-body"></tbody></table></div>
         <p class="fine-print">Success comes from the environment's goal state. Evaluable means completed or budget-exhausted; errored episodes are left out of the success denominator. Token usage is never estimated. Compare configurations within one run.</p>
-        <div class="episode-header"><h3>Episodes</h3><span id="episode-count" class="badge"></span></div>
+        <div class="episode-header"><div><h3>Inspect an episode</h3><p>Open a configuration to see its task, actions, observations and recorded decision events.</p></div><span id="episode-count" class="badge"></span></div>
         <div id="episodes" class="episodes"></div>
       </div>
     </section>

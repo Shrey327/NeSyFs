@@ -41,7 +41,7 @@ class TSMCPlanner:
         for _ in range(self._horizon):
             propagated: list[Particle] = []
             for particle in particles:
-                proposal = self._llm.propose_action(task, particle.observation, particle.facts)
+                proposal = self._llm.propose_action(task, particle.observation, particle.facts, sampled=True)
                 prediction = self._llm.predict(
                     task, particle.observation, proposal.action, particle.facts
                 )
