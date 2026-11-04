@@ -33,6 +33,7 @@ class TSMCPlanner:
         self._horizon = horizon
         self._temperature = temperature
         self._rng = rng or random.Random()
+        self.last_rollouts: list[dict] = []
 
     def choose_action(self, task: str, observation: str, facts: list[Fact]) -> str:
         particles = [Particle(observation=observation, facts=list(facts))
@@ -40,7 +41,7 @@ class TSMCPlanner:
         for _ in range(self._horizon):
             propagated: list[Particle] = []
             for particle in particles:
-                proposal = self._llm.propose_action(task, particle.observation, particle.facts)
+                proposal = self._llm.propose_action(task, particle.observation, particle.facts, sampled=True)
                 prediction = self._llm.predict(
                     task, particle.observation, proposal.action, particle.facts
                 )
@@ -69,6 +70,8 @@ class TSMCPlanner:
             particles = self._resample(propagated)
 
         selected = self._rng.choice(particles)
+        # Kept for inspection UIs: the surviving rollouts and which one was chosen.
+        self.last_rollouts = [{"actions": list(p.actions), "chosen": p is selected} for p in particles]
         return selected.actions[0]
 
     def _resample(self, particles: list[Particle]) -> list[Particle]:

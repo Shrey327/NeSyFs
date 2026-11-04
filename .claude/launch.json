@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "showcase",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "--locked", "--env-file", ".env", "python", "showcase.py"],
+      "port": 18765
+    }
+  ]
+}

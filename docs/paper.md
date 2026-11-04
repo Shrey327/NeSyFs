@@ -29,7 +29,7 @@ The paper itself describes a TSMC-style method without full importance-weight co
 | Particle settings | `N=6`, `L=5`, progress-weight parameter `lambda=1` (page 10). | Six particles, five future rollout rounds, weight multiplier `exp(1)` for progress. Algorithm 2 counts the initial state within `L`, so the rollout-length conventions differ. |
 | Resampling and selection | Weighted particle resampling followed by uniform final selection (pages 5 and 10). | Weighted resampling with replacement; reset weights after resampling; return the first action of a uniformly selected survivor. |
 | Models and sampling | Evaluations use GPT-5, GPT-5-mini and Llama-3.3-70B-Instruct (page 5). | Default `gpt-4.1-mini`; all calls use generation temperature `0`. Multiple votes/particles do not guarantee diverse samples. |
-| Evaluation | ALFWorld, WebShop and ScienceWorld; reported results averaged across three seeds (page 5). | Small kitchen simulator and manual mode. No benchmark integrations or evaluation harness. |
+| Evaluation | ALFWorld, WebShop and ScienceWorld; reported results averaged across three seeds (page 5). | Small kitchen simulator, local synthetic comparison lab and manual mode. No paper-benchmark integrations or benchmark evaluation harness. |
 
 The matching parameter values are useful starting points. They do not establish a faithful reproduction of the paper's experiments.
 

@@ -76,9 +76,12 @@ class Neo4jKnowledgeGraph:
         tx.run(
             "UNWIND $facts AS row "
             "MERGE (s:NeSyEntity {session_id: $session_id, name: row.subject}) "
-            "MERGE (f:NeSyFact {session_id: $session_id, id: row.id}) "
-            "SET f.subject = row.subject, f.predicate = row.predicate, "
-            "f.object = row.object, f.observed_at = row.observed_at, f.evidence = row.evidence "
+            # A re-observed triple refreshes the existing fact instead of duplicating it;
+            # duplicates would grow every later prompt and slow inference each step.
+            "MERGE (f:NeSyFact {session_id: $session_id, subject: row.subject, "
+            "predicate: row.predicate, object: row.object}) "
+            "ON CREATE SET f.id = row.id "
+            "SET f.observed_at = row.observed_at, f.evidence = row.evidence "
             "MERGE (s)-[:HAS_FACT]->(f) "
             "MERGE (o:NeSyEntity {session_id: $session_id, name: row.object}) "
             "MERGE (o)-[:HAS_FACT]->(f)",
