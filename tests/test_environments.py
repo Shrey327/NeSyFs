@@ -28,7 +28,7 @@ class KitchenDemoTests(unittest.TestCase):
     def test_cannot_store_apple_without_holding_it(self):
         self.environment.execute("open fridge")
         observation = self.environment.execute("put apple in fridge")
-        self.assertEqual(observation, "You are not holding the apple.")
+        self.assertEqual(observation, "You are not holding the apple; nothing changed.")
         self.assertFalse(self.environment.is_complete)
         self.assertEqual(self.environment.apple_location, "table")
 

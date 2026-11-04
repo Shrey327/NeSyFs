@@ -5,6 +5,13 @@ from nesyfs.eval_env import EvaluationKitchen, SCENARIOS
 
 
 class EvaluationKitchenTests(unittest.TestCase):
+    def test_every_no_op_says_nothing_changed(self):
+        env = EvaluationKitchen(next(s for s in SCENARIOS if s.id == "wash_mug_secure"))
+        for action in ("unlock cupboard with key", "wash mug", "hold key", "take banana", "take mug"):
+            with self.subTest(action=action):
+                self.assertIn("nothing changed", env.execute(action))
+        self.assertEqual(env.invalid_actions, 5)
+
     def test_each_scenario_reaches_goal_through_real_state_changes(self):
         actions = {
             "apple_table_fridge": ["take apple", "open fridge", "put apple in fridge"],

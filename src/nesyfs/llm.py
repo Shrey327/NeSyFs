@@ -25,6 +25,8 @@ from nesyfs.models import (
 # a rambling small model from burning GPU time on tokens that are thrown away.
 LOCAL_MAX_TOKENS = {"entities": 128, "reflect": 160, "propose": 192, "predict": 256, "memory": 384, "lesson": 192}
 MEMO_SIZE = 256
+# Environments say this when an action had no effect (see EnvironmentAdapter).
+NO_EFFECT = "nothing changed"
 _THINK = re.compile(r"\A\s*<think>[\s\S]*?</think>\s*", re.IGNORECASE)
 _THINK_MARKER = re.compile(r"<\s*/?\s*t\s*h\s*i\s*n\s*k\b", re.IGNORECASE)
 
@@ -221,6 +223,10 @@ class NeSyFSLanguageModel:
     def extract_memory(
         self, action: str, observation: str, existing_facts: list[Fact]
     ) -> MemoryDelta:
+        # A no-op leaves state as it was. Small models misread failure messages as the
+        # intended effect ("You must hold the key" -> key is held), corrupting the graph.
+        if NO_EFFECT in observation.casefold():
+            return MemoryDelta()
         return self._call(
             "memory",
             MemoryDelta,

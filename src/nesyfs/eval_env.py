@@ -130,6 +130,8 @@ class EvaluationKitchen:
         return self._observation
 
     def _invalid(self, message: str) -> str:
+        if "nothing changed" not in message:
+            message = message.rstrip(".") + "; nothing changed."
         self.invalid_actions += 1
         self._observation = message
         return message

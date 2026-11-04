@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from nesyfs.llm import NeSyFSLanguageModel
-from nesyfs.models import ActionProposal
+from nesyfs.models import ActionProposal, MemoryDelta
 
 
 class LanguageModelConfigurationTests(unittest.TestCase):
@@ -26,6 +26,15 @@ class LanguageModelConfigurationTests(unittest.TestCase):
             self.assertEqual(llm.propose_action("store apple", "apple on table", []).action, "take apple")
         self.assertEqual([call.kwargs["temperature"] for call in models.call_args_list], [0, 0.4])
         policy.with_structured_output.assert_called_once_with(ActionProposal)
+        agent.return_value.invoke.assert_not_called()
+
+    def test_no_effect_observation_keeps_memory_without_a_model_call(self):
+        with patch("nesyfs.llm.ChatOpenAI") as model, patch("nesyfs.llm.create_agent") as agent:
+            llm = NeSyFSLanguageModel("gpt-4.1-mini", "test-key")
+            delta = llm.extract_memory("unlock cupboard with key",
+                                       "You must hold the key to unlock the cupboard; nothing changed.", [])
+        self.assertEqual(delta, MemoryDelta())
+        model.return_value.with_structured_output.assert_not_called()
         agent.return_value.invoke.assert_not_called()
 
 

@@ -11,7 +11,9 @@ from nesyfs.planner import TSMCPlanner
 
 class EnvironmentAdapter(Protocol):
     def execute(self, action: str) -> str:
-        """Execute one action and return the environment's new observation."""
+        """Execute one action and return the environment's new observation.
+
+        An action with no effect must say "nothing changed" so memory keeps the old state."""
 
 
 class NeSyFSAgent:

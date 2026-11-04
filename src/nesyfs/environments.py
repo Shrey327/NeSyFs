@@ -37,10 +37,10 @@ class KitchenDemoEnvironment:
             word in normalized for word in ("fridge", "refrigerator")
         ):
             if not self.holding_apple:
-                return "You are not holding the apple."
+                return "You are not holding the apple; nothing changed."
             if not self.fridge_open:
-                return "The fridge is closed. You are still holding the apple."
+                return "The fridge is closed; nothing changed. You are still holding the apple."
             self.apple_location = "fridge"
             self.holding_apple = False
             return "You put the apple in the fridge. The task is complete."
-        return self.observe() + f" The action had no effect: {action}"
+        return self.observe() + f" The action had no effect, nothing changed: {action}"
